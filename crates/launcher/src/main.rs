@@ -281,12 +281,14 @@ fn result_row<'a>(state: &'a Launcher, index: usize, selected: bool) -> Element<
     let app = &state.apps[state.results[index]];
 
     // Unselected rows sit back in grey; the selected row goes white, name and
-    // generic name together.
+    // generic name together. The generic name is drawn at lower opacity so the
+    // title stays the focal point.
     let color = if selected {
         palette.text
     } else {
         palette.muted
     };
+    let subtext_color = color.scale_alpha(0.6);
 
     let mut labels = column![
         text(app.name.clone())
@@ -300,7 +302,7 @@ fn result_row<'a>(state: &'a Launcher, index: usize, selected: bool) -> Element<
             text(generic.clone())
                 .size(11.0)
                 .font(fonts.text)
-                .color(color),
+                .color(subtext_color),
         );
     }
 

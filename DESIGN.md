@@ -141,9 +141,9 @@ app, press Escape, or click outside the card.
 - **Search pill** (`field`, h40, square corners): a `search` glyph and a focused
   `text_input` (transparent, `text` on a `muted` placeholder).
 - **Rows** (`surface`, square corners): the app name, with its `GenericName`
-  underneath in `muted` when the entry has one. Unselected rows are `muted`;
-  the highlighted row uses `accent_fill` with both texts in `text` (white),
-  hover uses `hover`; clicking a row launches it.
+  underneath in a lower-opacity version of the row color when the entry has
+  one. Unselected rows are `muted`; the highlighted row uses `accent_fill` with
+  both texts in `text` (white), hover uses `hover`; clicking a row launches it.
 - **Keys:** type to filter, `↑`/`↓` move the selection (wrapping), `Enter`
   launches, `Escape` closes. The list scrolls to keep the selection visible.
 - **Discovery** (`crates/launcher/src/apps.rs`): scans the XDG data directories
