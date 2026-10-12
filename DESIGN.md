@@ -141,27 +141,36 @@ possible later addition.
 ## Building & running
 
 The iced/wgpu + Wayland client stack needs native libraries that aren't on a
-NixOS default path, so use the devshell:
+NixOS default path, so build through the devshell. `build.sh` does this and
+collects ready-to-run binaries in one directory:
 
 ```sh
-nix develop -c cargo run -p panel
+./build.sh          # release build of the whole workspace -> ./dist
+./dist/amber-panel  # run straight from the output directory
 ```
 
-Run it from inside a niri session (it needs a Wayland display). Until the flake
-packages the binaries (see *Later*), autostart the debug build through the
-devshell so it picks up the native libraries:
+It re-execs into the devshell, runs `cargo build --release --locked --workspace`,
+copies each binary into `dist/`, and `patchelf`s an RPATH onto them pointing at
+the devshell's Wayland/GL/fontconfig libraries, so no `cargo run` or
+`nix develop` is needed at runtime. For quick iteration a debug build still works
+via `nix develop -c cargo run -p panel`.
+
+Run it from inside a niri session (it needs a Wayland display). niri autostarts
+the release binaries directly:
 
 ```kdl
-spawn-at-startup "sh" "-c" "cd /home/catdealer/amber && nix develop -c cargo run -p panel"
+spawn-at-startup "sh" "-c" "/home/catdealer/amber/dist/amber-panel"
+spawn-at-startup "sh" "-c" "/home/catdealer/amber/dist/amber-wallpaper"
 ```
+
+Re-run `./build.sh` after pulling changes so those paths stay up to date.
 
 ## Later
 
-- **Packaging & release script.** Build the binaries with `rustPlatform`
+- **Flake packaging.** Build the binaries with `rustPlatform`
   (`buildRustPackage`), wrapping each with an `LD_LIBRARY_PATH` that points at the
-  Wayland/GL/fontconfig libraries, and add a release build script. Then switch
-  niri `spawn-at-startup` from the `nix develop` debug invocation above to the
-  packaged `amber-panel`.
+  Wayland/GL/fontconfig libraries, so `nix build` produces them without the
+  ad-hoc `build.sh`.
 
 ## Dependency notes
 
