@@ -53,9 +53,9 @@ A single surface anchored to the **top** edge, full width, `42px` tall, with a
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
-│  ❄       1  2  3  4  5                          ▮▮▯  09:41 AM      │
+│  ❄       1  2  3  4  5                   wifi bt  ▮▮▯  09:41 AM     │
 └───────────────────────────────────────────────────────────────────┘
-   logo            workspace pager                  battery  clock
+   logo            workspace pager         wifi bt battery  clock
 ```
 
 - **Left:** the Nix snowflake (`shell-common::assets::nix_bar()`), vertically
@@ -67,23 +67,34 @@ A single surface anchored to the **top** edge, full width, `42px` tall, with a
   - empty → `muted`
   - hover → `hover` fill, `6px` radius
   - left click → `niri msg action focus-workspace <idx>`
-- **Right:** battery indicator followed by the clock, formatted `%I:%M %p`
-  (e.g. `09:41 AM`).
-  - icon + percentage, read from `/sys/class/power_supply` (`shell-common::battery`)
-  - charging → `green` bolt glyph, full → `green`, ≤15% → `red` alert glyph,
-    otherwise a stepped `battery_*_bar` glyph in `text`
-  - hidden entirely when the machine has no battery
+- **Right:** Wi-Fi, Bluetooth, then battery, then the clock; each indicator is
+  omitted entirely when its hardware is absent.
+  - **Wi-Fi** (`shell-common::wifi`, via `nmcli`): `wifi_off` in `muted` when
+    the radio is off, a stepped `network_wifi_*` glyph in `text` when connected,
+    and `wifi_find` in `muted` when on but not associated. Left click toggles
+    the radio (`nmcli radio wifi on|off`).
+  - **Bluetooth** (`shell-common::bluetooth`, via `bluetoothctl`):
+    `bluetooth_disabled` in `muted` when off, `bluetooth` in `text` when on, and
+    `bluetooth_connected` in `green` when a device is connected. Left click
+    toggles power (`bluetoothctl power on|off`).
+  - **Battery** (icon + percentage), read from `/sys/class/power_supply`
+    (`shell-common::battery`). charging → `green` bolt glyph, full → `green`,
+    ≤15% → `red` alert glyph, otherwise a stepped `battery_*_bar` glyph in
+    `text`.
+  - **Clock**, formatted `%I:%M %p` (e.g. `09:41 AM`).
 
 Data comes from `niri msg --json workspaces`, polled every `400ms` (occupancy is
 cross-referenced from `niri msg --json windows`, since workspace objects no
 longer carry their window list); the clock ticks once per second and the
-battery every `10s`. All are subscriptions in
+battery, Wi-Fi and Bluetooth every `5s`. The Wi-Fi query passes `--rescan no` so
+polling never triggers a scan. All are subscriptions in
 `crates/panel/src/main.rs`. The left/right clusters sit on a base row while the
 pager is stacked on top and centered on the bar's full width.
 
 ### Not yet in the bar
 
 - Battery via `upower` over D-Bus (currently sysfs).
+- Wi-Fi/Bluetooth via D-Bus (currently `nmcli`/`bluetoothctl`).
 - Scroll-wheel to cycle workspaces.
 
 ## The wallpaper (`amber-wallpaper`)
