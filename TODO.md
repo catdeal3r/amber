@@ -1,0 +1,31 @@
+# TODOs in order of importance
+- [ ] Add tray icons
+- [ ] Lockscreen and swayidle integration
+  - [ ] Time
+  - [ ] Media Player
+  - [ ] Animations
+  - [ ] Swayidle lock on return from sleep
+- [ ] Quick settings that appears on hover of the wifi/bluetooth buttons
+  - [ ] Toggles
+    - [ ] Wifi toggle
+      - [ ] Network selection in submenu
+    - [ ] Bluetooth toggle
+      - [ ] Device selection in submenu
+    - [ ] Caffinated
+    - [ ] Do not disturb
+      - [ ] Per-app dnd in submenu
+  - [ ] Sliders
+    - [ ] Speaker Volume
+      - [ ] Per-app volume control in submenu
+      - [ ] Device selection in submenu
+    - [ ] Microphone Volume (hidden when no mic is connected)
+      - [ ] Per-app control in submenu
+      - [ ] Device selection in submenu
+    - [ ] Brightness (hidden when the is unable to be controled by the OS)
+      - [ ] Night light colour temperture adjustment in submenu
+      - [ ] Night light toggle in submenu
+- [ ] Media player that appears on hover of the workspace widget
+  - [ ] Title + artist
+  - [ ] Cover art as background (just plain black if no cover art)
+  - [ ] Play/pause, next, previous controls
+  - [ ] Shuffle/loop controls if supported by player
