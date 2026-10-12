@@ -93,7 +93,10 @@ behind all windows; input passes through (`events_transparent`) and the keyboard
 interaction is `None`. The configured image is decoded up front and handed to
 iced as raw RGBA (the same path as the bundled assets), so any format the `image`
 crate can read works without iced's codec features. The format is sniffed from
-the file contents, so the extension doesn't have to match. With no `path` set it
+the file contents, so the extension doesn't have to match. Images whose longest
+side exceeds 2048px are downscaled first: iced uploads images through a texture
+atlas that is capped at 2048 (`iced_wgpu`'s `image::atlas::MAX_SIZE`), and larger
+images are split into fragments that don't render correctly. With no `path` set it
 just fills with the theme `bg`. If the configured image is missing, unreadable or
 corrupted, a `warning: ...` line is printed to stderr and shown in the centre of
 the screen. Passing an output name as the first argument pins it to that output,

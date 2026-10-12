@@ -10,10 +10,14 @@ use iced::widget::{Space, container, image as image_widget, text};
 use iced::{ContentFit, Element, Length, Task as Command};
 use iced_layershell::application;
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer};
-use iced_layershell::settings::{LayerShellSettings, StartMode, Settings};
+use iced_layershell::settings::{LayerShellSettings, Settings, StartMode};
 use iced_layershell::to_layer_message;
 use shell_common::config::{self, WallpaperConfig};
 use shell_common::theme::Theme;
+
+/// iced uploads images through a texture atlas sized at most to this, and
+/// larger images render as garbage; see `iced_wgpu`'s `image::atlas::MAX_SIZE`.
+const ATLAS_MAX_SIDE: u32 = 2048;
 
 #[to_layer_message]
 #[derive(Debug, Clone)]
@@ -78,14 +82,26 @@ fn load(path: &std::path::Path) -> Result<image_widget::Handle, String> {
         Err(err) => return Err(format!("cannot access wallpaper {}: {err}", path.display())),
     }
 
-    let decoded = image::ImageReader::open(path)
+    let mut image = image::ImageReader::open(path)
         .map_err(|err| format!("cannot open wallpaper {}: {err}", path.display()))?
         .with_guessed_format()
         .map_err(|err| format!("cannot read wallpaper {}: {err}", path.display()))?
         .decode()
-        .map_err(|err| format!("wallpaper is corrupted: {}: {err}", path.display()))?
-        .into_rgba8();
+        .map_err(|err| format!("wallpaper is corrupted: {}: {err}", path.display()))?;
 
+    // iced uploads images through a texture atlas that is capped at
+    // `ATLAS_MAX_SIDE`; anything larger is split into fragments that don't
+    // render correctly, so downscale first. The result is still far more
+    // pixels than any output shows.
+    if image.width() > ATLAS_MAX_SIDE || image.height() > ATLAS_MAX_SIDE {
+        image = image.resize(
+            ATLAS_MAX_SIDE,
+            ATLAS_MAX_SIDE,
+            image::imageops::FilterType::Lanczos3,
+        );
+    }
+
+    let decoded = image.into_rgba8();
     let (width, height) = decoded.dimensions();
     Ok(image_widget::Handle::from_rgba(
         width,
