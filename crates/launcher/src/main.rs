@@ -280,15 +280,10 @@ fn result_row<'a>(state: &'a Launcher, index: usize, selected: bool) -> Element<
     let fonts = state.theme.fonts;
     let app = &state.apps[state.results[index]];
 
-    // Unselected names sit back in grey; the selected name is white. The
-    // generic name would vanish under the accent fill, so it turns black there.
-    let name_color = if selected {
+    // Unselected rows sit back in grey; the selected row goes white, name and
+    // generic name together.
+    let color = if selected {
         palette.text
-    } else {
-        palette.muted
-    };
-    let generic_color = if selected {
-        Color::BLACK
     } else {
         palette.muted
     };
@@ -297,7 +292,7 @@ fn result_row<'a>(state: &'a Launcher, index: usize, selected: bool) -> Element<
         text(app.name.clone())
             .size(14.0)
             .font(fonts.text)
-            .color(name_color)
+            .color(color)
     ]
     .spacing(1.0);
     if let Some(generic) = &app.generic {
@@ -305,7 +300,7 @@ fn result_row<'a>(state: &'a Launcher, index: usize, selected: bool) -> Element<
             text(generic.clone())
                 .size(11.0)
                 .font(fonts.text)
-                .color(generic_color),
+                .color(color),
         );
     }
 
@@ -332,7 +327,7 @@ fn result_row<'a>(state: &'a Launcher, index: usize, selected: bool) -> Element<
         };
         button::Style {
             background: Some(background.into()),
-            text_color: name_color,
+            text_color: color,
             border: Border::default(),
             ..button::Style::default()
         }
