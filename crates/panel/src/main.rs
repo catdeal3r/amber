@@ -36,6 +36,7 @@ struct Panel {
     clock: String,
     battery: Option<Battery>,
     logo: image::Handle,
+    config_error: Option<String>,
 }
 
 impl Panel {
@@ -49,6 +50,7 @@ impl Panel {
             clock: clock_now(),
             battery: Battery::read(),
             logo,
+            config_error: config::startup_error(),
         }
     }
 }
@@ -102,10 +104,18 @@ fn view(state: &Panel) -> Element<'_, Message> {
     .spacing(metrics.gap)
     .align_y(Alignment::Center);
 
-    let clock = text(state.clock.clone())
-        .size(13.0)
-        .font(fonts.text)
-        .color(palette.text);
+    // If the config file failed to parse at startup, say so where the clock
+    // would be (the full detail is printed to stderr).
+    let clock = match &state.config_error {
+        Some(_) => text("config error")
+            .size(13.0)
+            .font(fonts.text)
+            .color(palette.red),
+        None => text(state.clock.clone())
+            .size(13.0)
+            .font(fonts.text)
+            .color(palette.text),
+    };
 
     let right = row![battery_indicator(state), clock]
         .spacing(metrics.gap + 3.0)

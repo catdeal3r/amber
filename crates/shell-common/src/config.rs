@@ -23,6 +23,10 @@ use crate::theme::{Fonts, Theme};
 
 static CONFIG: LazyLock<RwLock<Config>> = LazyLock::new(|| RwLock::new(Config::load()));
 
+/// Set once if the config file exists but could not be read/parsed, so
+/// components can surface it to the user. `None` when loading was clean.
+static STARTUP_ERROR: RwLock<Option<String>> = RwLock::new(None);
+
 /// Fully-resolved settings for the shell.
 #[derive(Debug, Clone, Default)]
 pub struct Config {
@@ -62,16 +66,41 @@ impl Default for WallpaperConfig {
 impl Config {
     /// Read the config file from disk, applying defaults for anything absent.
     fn load() -> Self {
-        std::fs::read_to_string(path())
-            .ok()
-            .and_then(|content| Self::parse(&content))
-            .unwrap_or_default()
+        if let Ok(mut slot) = STARTUP_ERROR.write() {
+            *slot = None;
+        }
+
+        let path = path();
+
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            // No file is the normal case: everything falls back to defaults.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Self::default(),
+            Err(err) => {
+                report(&format!(
+                    "amber: cannot read configuration at {}\n  {err}\n  using built-in defaults",
+                    path.display()
+                ));
+                return Self::default();
+            }
+        };
+
+        match Self::parse(&content) {
+            Ok(config) => config,
+            Err(err) => {
+                report(&format!(
+                    "amber: invalid configuration at {}\n{err}\n  using built-in defaults",
+                    path.display()
+                ));
+                Self::default()
+            }
+        }
     }
 
     /// Parse a TOML document into a [`Config`].
-    fn parse(content: &str) -> Option<Self> {
-        let raw: RawConfig = toml::from_str(content).ok()?;
-        Some(Self::from_raw(raw))
+    fn parse(content: &str) -> Result<Self, toml::de::Error> {
+        let raw: RawConfig = toml::from_str(content)?;
+        Ok(Self::from_raw(raw))
     }
 
     fn from_raw(raw: RawConfig) -> Self {
@@ -118,6 +147,23 @@ impl FontConfig {
 /// The current configuration snapshot.
 pub fn get() -> Config {
     CONFIG.read().expect("config lock poisoned").clone()
+}
+
+/// Description of any error hit while loading the config at startup, for
+/// surfacing to the user. `None` when the config loaded cleanly (or is absent).
+pub fn startup_error() -> Option<String> {
+    // Make sure the file has actually been read.
+    let _ = get();
+    STARTUP_ERROR.read().ok().and_then(|slot| slot.clone())
+}
+
+/// Print an error prominently and remember it for [`startup_error`].
+fn report(message: &str) {
+    eprintln!("\n{message}\n");
+
+    if let Ok(mut slot) = STARTUP_ERROR.write() {
+        *slot = Some(message.to_string());
+    }
 }
 
 /// Re-read the config file from disk and return the fresh snapshot.
@@ -217,5 +263,10 @@ mod tests {
         assert!(cfg.font.icon.is_none());
         assert!(cfg.wallpaper.path.is_none());
         assert!(matches!(cfg.wallpaper.fit, ContentFit::Cover));
+    }
+
+    #[test]
+    fn invalid_toml_is_an_error() {
+        assert!(Config::parse("[font\ntext =").is_err());
     }
 }

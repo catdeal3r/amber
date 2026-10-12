@@ -6,7 +6,7 @@
 //! works without depending on iced's heavy codec features. With no `[wallpaper]`
 //! `path` configured, it just fills the output with the theme `bg`.
 
-use iced::widget::{Space, container, image as image_widget};
+use iced::widget::{Space, container, image as image_widget, text};
 use iced::{ContentFit, Element, Length, Task as Command};
 use iced_layershell::application;
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer};
@@ -27,24 +27,67 @@ struct Background {
     theme: Theme,
     image: Option<image_widget::Handle>,
     fit: ContentFit,
+    /// Set when the configured wallpaper couldn't be loaded; shown on screen
+    /// and printed to stderr.
+    warning: Option<String>,
 }
 
 impl Background {
     fn new(theme: Theme, cfg: &WallpaperConfig) -> Self {
-        Self {
+        let mut background = Self {
             theme,
-            image: cfg.path.as_deref().and_then(load),
+            image: None,
             fit: cfg.fit,
+            warning: None,
+        };
+        background.apply(cfg);
+        background
+    }
+
+    /// Resolve the configured image (or the solid fallback), reporting any
+    /// problem both to the user and to stderr.
+    fn apply(&mut self, cfg: &WallpaperConfig) {
+        self.fit = cfg.fit;
+        self.warning = None;
+
+        let Some(path) = cfg.path.as_deref() else {
+            self.image = None;
+            return;
+        };
+
+        match load(path) {
+            Ok(handle) => self.image = Some(handle),
+            Err(message) => {
+                eprintln!("warning: {message}");
+                self.warning = Some(message);
+                self.image = None;
+            }
         }
     }
 }
 
-/// Decode an image file to RGBA. Returns `None` if it can't be read, in which
-/// case the solid background shows through.
-fn load(path: &std::path::Path) -> Option<image_widget::Handle> {
-    let decoded = image::open(path).ok()?.into_rgba8();
+/// Decode an image file to RGBA, sniffing the format from the file's content
+/// (so the extension doesn't have to match). Errors are human-readable.
+fn load(path: &std::path::Path) -> Result<image_widget::Handle, String> {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_file() => {}
+        Ok(_) => return Err(format!("wallpaper is not a file: {}", path.display())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!("wallpaper does not exist: {}", path.display()));
+        }
+        Err(err) => return Err(format!("cannot access wallpaper {}: {err}", path.display())),
+    }
+
+    let decoded = image::ImageReader::open(path)
+        .map_err(|err| format!("cannot open wallpaper {}: {err}", path.display()))?
+        .with_guessed_format()
+        .map_err(|err| format!("cannot read wallpaper {}: {err}", path.display()))?
+        .decode()
+        .map_err(|err| format!("wallpaper is corrupted: {}: {err}", path.display()))?
+        .into_rgba8();
+
     let (width, height) = decoded.dimensions();
-    Some(image_widget::Handle::from_rgba(
+    Ok(image_widget::Handle::from_rgba(
         width,
         height,
         decoded.into_raw(),
@@ -88,33 +131,46 @@ fn main() -> Result<(), iced_layershell::Error> {
 
 fn update(state: &mut Background, message: Message) -> Command<Message> {
     match message {
-        Message::Reload => {
-            let cfg = config::reload().wallpaper;
-            state.image = cfg.path.as_deref().and_then(load);
-            state.fit = cfg.fit;
-            Command::none()
-        }
-        _ => Command::none(),
+        Message::Reload => state.apply(&config::reload().wallpaper),
+        _ => {}
     }
+
+    Command::none()
 }
 
 fn view(state: &Background) -> Element<'_, Message> {
-    let layer: Element<Message> = match &state.image {
-        Some(handle) => image_widget(handle.clone())
+    let palette = state.theme.palette;
+    let fonts = state.theme.fonts;
+
+    let layer: Element<Message> = if let Some(warning) = &state.warning {
+        // No wallpaper to show: say why, in the middle of the screen.
+        container(
+            text(warning.clone())
+                .font(fonts.text)
+                .size(16.0)
+                .color(palette.red)
+                .width(Length::Fill)
+                .align_x(iced::alignment::Horizontal::Center),
+        )
+        .padding(24.0)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .into()
+    } else if let Some(handle) = &state.image {
+        image_widget(handle.clone())
             .content_fit(state.fit)
             .width(Length::Fill)
             .height(Length::Fill)
-            .into(),
-        None => Space::new().width(Length::Fill).height(Length::Fill).into(),
+            .into()
+    } else {
+        Space::new().width(Length::Fill).height(Length::Fill).into()
     };
-
-    let bg = state.theme.palette.bg;
 
     container(layer)
         .width(Length::Fill)
         .height(Length::Fill)
         .style(move |_| container::Style {
-            background: Some(bg.into()),
+            background: Some(palette.bg.into()),
             ..container::Style::default()
         })
         .into()

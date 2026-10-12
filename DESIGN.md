@@ -92,9 +92,12 @@ A `Layer::Background` surface anchored to every edge, so it fills the output
 behind all windows; input passes through (`events_transparent`) and the keyboard
 interaction is `None`. The configured image is decoded up front and handed to
 iced as raw RGBA (the same path as the bundled assets), so any format the `image`
-crate can read works without iced's codec features. With no `path` set it just
-fills with the theme `bg`. Passing an output name as the first argument pins it
-to that output, otherwise it follows the active one.
+crate can read works without iced's codec features. The format is sniffed from
+the file contents, so the extension doesn't have to match. With no `path` set it
+just fills with the theme `bg`. If the configured image is missing, unreadable or
+corrupted, a `warning: ...` line is printed to stderr and shown in the centre of
+the screen. Passing an output name as the first argument pins it to that output,
+otherwise it follows the active one.
 
 ## Planned surfaces (spec captured, not built)
 
@@ -126,9 +129,11 @@ fit = "cover" # cover | contain | fill | none
 Loaded once at startup by `shell-common::config`, which exposes a small manager:
 `config::get()` returns the current snapshot, `config::reload()` re-reads the
 file, and `config::path()` reports the location. `config::theme()` and
-`config::wallpaper()` are conveniences over it. Colours are intentionally
-pinned to `fuji`; a wallust-driven `colours.json` watcher is a possible later
-addition.
+`config::wallpaper()` are conveniences over it. Invalid TOML is reported
+prominently on stderr (with the file path and the parse error) and surfaced as a
+red `config error` in the bar; the shell then runs on the built-in defaults. Colours
+are intentionally pinned to `fuji`; a wallust-driven `colours.json` watcher is a
+possible later addition.
 
 ## Building & running
 
