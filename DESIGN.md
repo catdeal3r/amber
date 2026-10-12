@@ -163,8 +163,11 @@ exits.
   the slide comes from two `FillPortion` spacers around the card — `≈0:1` at the
   top edge when hidden, `1:1` (centred) when open. Frames come from a `16ms`
   tick subscription that only runs while something is animating.
-- **Focus & dismissal:** the search field is focused once as soon as the surface
-  maps (a `Subscription::run` stream that fires a single `Focus` message). A
+- **Focus & dismissal:** a `Subscription::run` stream fires a single `Focus`
+  message that starts the open animation, and focus is (re)issued on each
+  opening frame. The field can only take focus once it is laid out — which can
+  be a frame after the surface maps — so the card stays in the widget tree even
+  while transparent, and focus is retried until the animation settles. A
   full-output click-catcher sits under the card, so a click anywhere outside
   dismisses while the card swallows its own clicks. Escape is handled first and
   always dismisses, even if the text field would consume it.

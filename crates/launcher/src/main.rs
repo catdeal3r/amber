@@ -142,7 +142,7 @@ fn update(state: &mut Launcher, message: Message) -> Task<Message> {
         Message::Focus => {
             state.now = Instant::now();
             state.progress.go_mut(true, state.now);
-            iced::widget::operation::focus(state.input_id.clone())
+            Task::none()
         }
         Message::QueryChanged(query) => {
             state.query = query;
@@ -180,7 +180,15 @@ fn update(state: &mut Launcher, message: Message) -> Task<Message> {
         Message::Tick(now) => {
             state.now = now;
             if state.progress.is_animating(now) {
-                return Task::none();
+                // Keep the search field focused while the surface opens. It can
+                // only take focus once it is laid out, which may be a frame
+                // after the `Focus` message, so reissue it until the animation
+                // settles rather than trying to focus it too early.
+                return if state.closing.is_none() {
+                    iced::widget::operation::focus(state.input_id.clone())
+                } else {
+                    Task::none()
+                };
             }
             match state.closing.take() {
                 Some(Close::Launch(app_index)) => {
@@ -335,25 +343,25 @@ fn view(state: &Launcher) -> Element<'_, Message> {
         .on_press(Message::Dismiss),
     );
 
-    if t > 0.0 {
-        // Slide down from the top edge: with an empty top spacer the card hugs
-        // the top at `t = 0`, and by `t = 1` the spacers are equal and it rests
-        // centred. Only the card is wrapped in a `mouse_area`, so clicks in the
-        // empty spacers fall through to the dismiss catcher below.
-        let top = 1 + (t * 1000.0) as u16;
-        let bottom = 1001;
+    // Slide down from the top edge: with an empty top spacer the card hugs the
+    // top when hidden, and at rest the spacers are equal so it sits centred.
+    // The card is always in the tree — even fully transparent — so the search
+    // field exists (and can be focused) from the very first frame. Only the
+    // card is wrapped in a `mouse_area`, so clicks in the empty spacers fall
+    // through to the dismiss catcher below.
+    let top = 1 + (t * 1000.0) as u16;
+    let bottom = 1001;
 
-        overlays = overlays.push(
-            column![
-                Space::new().height(Length::FillPortion(top)),
-                mouse_area(card).on_press(Message::Noop),
-                Space::new().height(Length::FillPortion(bottom)),
-            ]
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .align_x(Alignment::Center),
-        );
-    }
+    overlays = overlays.push(
+        column![
+            Space::new().height(Length::FillPortion(top)),
+            mouse_area(card).on_press(Message::Noop),
+            Space::new().height(Length::FillPortion(bottom)),
+        ]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(Alignment::Center),
+    );
 
     overlays.into()
 }
