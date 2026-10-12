@@ -13,12 +13,12 @@ running on top of niri, written in Rust with [iced] through
 | ---------------------- | ---------------- | ----------- |
 | `crates/shell-common`  | —                | done        |
 | `crates/panel`         | `amber-panel`    | done (v1)   |
-| `crates/launcher`      | `amber-launcher` | stub        |
+| `crates/launcher`      | `amber-launcher` | done (v1)   |
 | `crates/notifd`        | `amber-notifd`   | stub        |
 | `crates/locker`        | `amber-locker`   | stub        |
 
-The panel is the only surface implemented so far; the rest are placeholders so
-the workspace resolves.
+The panel and the launcher are implemented; the rest are placeholders so the
+workspace resolves.
 
 ## Design language — `fuji`
 
@@ -116,12 +116,56 @@ corrupted, a `warning: ...` line is printed to stderr and shown in the centre of
 the screen. Passing an output name as the first argument pins it to that output,
 otherwise it follows the active one.
 
+## The launcher (`amber-launcher`)
+
+A one-shot, keyboard-exclusive overlay. It grabs the keyboard the moment it
+maps so you can start typing immediately, and exits as soon as you launch an
+app, press Escape, or click outside the card.
+
+```
+┌───────────────────────────────────────────────┐
+│  ⌕  Search applications                        │
+│  ┌─────────────────────────────────────────┐  │
+│  │ Firefox                                 │  │  ← selected (accent_fill)
+│  │ Files                                   │  │
+│  │ Blender                                 │  │
+│  └─────────────────────────────────────────┘  │
+└───────────────────────────────────────────────┘
+            500px centred card, square corners
+```
+
+- **Surface:** `Layer::Overlay`, anchored to every edge with `size: None` so it
+  fills the output; the `500px` card (`bg`, square corners) centres itself
+  inside. Keyboard interaction is `Exclusive`; Escape and clicks outside the
+  card dismiss it.
+- **Search pill** (`field`, h40, square corners): a `search` glyph and a focused
+  `text_input` (transparent, `text` on a `muted` placeholder).
+- **Rows** (`surface`, square corners): the app name, with its `GenericName`
+  underneath in `muted` when the entry has one. Unselected names are `muted`;
+  the highlighted row uses `accent_fill` with a white name and a black
+  `GenericName` (which would otherwise disappear into the accent), hover uses
+  `hover`; clicking a row launches it.
+- **Keys:** type to filter, `↑`/`↓` move the selection (wrapping), `Enter`
+  launches, `Escape` closes. The list scrolls to keep the selection visible.
+- **Discovery** (`crates/launcher/src/apps.rs`): scans the XDG data directories
+  with `freedesktop-desktop-entry`, keeping `Type=Application` entries that are
+  neither `NoDisplay` nor `Hidden` and that show on the current desktop set
+  (`NotShowIn` excludes; `OnlyShowIn` is applied only when the session
+  advertises a desktop). Duplicate ids keep the higher-priority directory, and
+  names are read in the environment locale.
+- **Matching:** `nucleo-matcher` fuzzy-scores the query against each app name;
+  an empty query lists everything alphabetically, and only matches are shown.
+- **Launching:** the `Exec` line is tokenized into argv
+  (`crates/launcher/src/exec.rs`) honouring the spec's quoting and escaping plus
+  field-code substitution. The crate's own `parse_exec` splits on whitespace and
+  would tear `"an arg"` apart, hence the local tokenizer: `%i`/`%c`/`%k` expand,
+  while `%f`/`%F`/`%u`/`%U` and unknown or deprecated codes drop out.
+  `Terminal=true` entries run inside `$TERMINAL` (or the first of a few common
+  emulators found on `PATH`), and the child is spawned detached with its
+  standard streams pointed at `/dev/null`.
+
 ## Planned surfaces (spec captured, not built)
 
-- **Launcher** (`500px` centered overlay, r10, keyboard-exclusive): search pill
-  (`field`, h40) + Apps/Windows tabs (active `accent_fill`); rows `surface` r10,
-  selected `accent_fill`; fuzzy `.desktop` search, detached spawn; Windows tab via
-  `niri msg --json windows`.
 - **Notifications** (`400px` toasts, `surface` r10, 10px gaps): 4s timeout with a
   3px status-coloured progress bar, click/swipe dismiss, hover pauses; default
   top-right, configurable.
@@ -184,6 +228,14 @@ spawn-at-startup "sh" "-c" "/home/catdealer/amber/dist/amber-panel"
 spawn-at-startup "sh" "-c" "/home/catdealer/amber/dist/amber-wallpaper"
 ```
 
+The launcher is on demand rather than always-on, so bind it to a key instead:
+
+```kdl
+binds {
+    Mod+D { spawn "sh" "-c" "/home/catdealer/amber/dist/amber-launcher"; }
+}
+```
+
 Re-run `./build.sh` after pulling changes so those paths stay up to date. When
 iterating on one component, `./build.sh amber-panel` (etc.) is usually enough.
 
@@ -204,5 +256,7 @@ iterating on one component, `./build.sh amber-panel` (etc.) is usually enough.
 - `winit-core`/`winit-common` are pinned to `0.31.0-beta.2` in `Cargo.lock`:
   `iced_exdevtools 0.19.1` (a mandatory dep of iced_layershell) does not compile
   against `beta.3`, which added `#[non_exhaustive]` to `NativeKeyCode`.
+- The launcher adds `freedesktop-desktop-entry 0.8` (`.desktop` discovery and
+  localized fields, MPL-2.0) and `nucleo-matcher 0.3` (fuzzy scoring, MPL-2.0).
 - Nix logo is rasterised to PNG at build-asset time rather than shipped as SVG
   (see `crates/shell-common/src/assets.rs` for the regeneration command).
