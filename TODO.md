@@ -1,11 +1,30 @@
 # TODOs in order of importance
-- [ ] Add tray icons
+- [ ] Add tray icons to bar
+- [ ] Hover of time, battery, and wifi/bluetooth reveal extra information
 - [ ] Lockscreen and swayidle integration
   - [ ] Time
   - [ ] Media Player
   - [ ] Animations
   - [ ] Swayidle lock on return from sleep
-- [ ] Quick settings that appears on hover of the wifi/bluetooth buttons
+- [ ] Notifications
+  - [ ] Basic title and body
+  - [ ] Title wraps
+  - [ ] Height extends with notification when body is larger than normal up to a certain point, then wraps with scrollbar
+  - [ ] Image support
+  - [ ] Time shown in the top right (just "Now" for now as this feature will be used more with the notification history)
+  - [ ] Action support
+  - [ ] Gestures and inputs
+    - [ ] Flick to the right to dismiss
+    - [ ] Flick to the left to delete (like dismiss but isnt shown in notif history)
+    - [ ] Left click on anywhere but the action buttons to dismiss 
+    - [ ] Right click on anywhere but the action buttons to delete
+  - [ ] Animations
+    - [ ] Slide in from the right
+    - [ ] Move down if another notification appears
+    - [ ] Slide out to the right when dismissed or times out
+    - [ ] Slide to the left and fades to transparent when deleted
+- [ ] Quick settings that appears on click of wifi/bluetooth buttons
+  - [ ] Change the toggle wifi behaviour to be on middle click
   - [ ] Toggles
     - [ ] Wifi toggle
       - [ ] Network selection in submenu
@@ -29,3 +48,8 @@
   - [ ] Cover art as background (just plain black if no cover art)
   - [ ] Play/pause, next, previous controls
   - [ ] Shuffle/loop controls if supported by player
+- [ ] Notification center that appears on click of time
+  - [ ] Time of notification in top right
+  - [ ] Notification history
+  - [ ] Clear all button
+  - [ ] Same animations as with live notifications
