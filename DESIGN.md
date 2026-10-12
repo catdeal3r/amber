@@ -38,7 +38,8 @@ Semantic tokens (see `crates/shell-common/src/theme.rs`):
 | `green`       | status green                           | `#89ab8a` |
 | `yellow`      | attention                              | `#c4c19e` |
 
-- **Radius:** `10` for cards/overlays, `6` for tight chips.
+- **Radius:** `10` for cards/overlays, `6` for tight chips. The launcher opts
+  out of rounding entirely: its card, search pill and rows are square-cornered.
 - **Fonts:** `monospace` for text, `Material Symbols Sharp` for icons.
   Both are resolved from the system font stack and overridable.
   CommitMono Regular is bundled (`shell-common/assets/`, OFL-1.1) and registered
@@ -127,6 +128,7 @@ app, press Escape, or click outside the card.
 │  ⌕  Search applications                        │
 │  ┌─────────────────────────────────────────┐  │
 │  │ Firefox                                 │  │  ← selected (accent_fill)
+│  │ Web Browser                             │  │     └ subtext, 60% opacity
 │  │ Files                                   │  │
 │  │ Blender                                 │  │
 │  └─────────────────────────────────────────┘  │
@@ -137,15 +139,25 @@ app, press Escape, or click outside the card.
 - **Surface:** `Layer::Overlay`, anchored to every edge with `size: None` so it
   fills the output; the `500px` card (`bg`, square corners) centres itself
   inside. Keyboard interaction is `Exclusive`; Escape and clicks outside the
-  card dismiss it.
+  card dismiss it. The wrapped surface is transparent, so any sliver around the
+  card shows the desktop beneath.
 - **Search pill** (`field`, h40, square corners): a `search` glyph and a focused
-  `text_input` (transparent, `text` on a `muted` placeholder).
-- **Rows** (`surface`, square corners): the app name, with its `GenericName`
-  underneath in a lower-opacity version of the row color when the entry has
-  one. Unselected rows are `muted`; the highlighted row uses `accent_fill` with
-  both texts in `text` (white), hover uses `hover`; clicking a row launches it.
+  `text_input` (transparent, `text` on a `muted` placeholder, `accent_fill`
+  selection).
+- **Rows** (`surface`, square corners, h38): the app name, with its
+  `GenericName` underneath (11px) in the row color at 60% opacity when the entry
+  has one. Unselected rows are `muted` with a `hover` fill on hover; the
+  highlighted row uses `accent_fill` with both texts in `text` (white). Clicking
+  a row launches it.
 - **Keys:** type to filter, `↑`/`↓` move the selection (wrapping), `Enter`
-  launches, `Escape` closes. The list scrolls to keep the selection visible.
+  launches, `Escape` closes. Up to eight rows fit at once (`MAX_ROWS`) and the
+  window scrolls to keep the selection visible; an empty result set shows a
+  centred `No matches`.
+- **Focus & dismissal:** the search field is focused once as soon as the surface
+  maps (a `Subscription::run` stream that fires a single `Focus` message). A
+  full-output click-catcher sits under the card, so a click anywhere outside
+  dismisses while the card swallows its own clicks. Escape is handled first and
+  always dismisses, even if the text field would consume it.
 - **Discovery** (`crates/launcher/src/apps.rs`): scans the XDG data directories
   with `freedesktop-desktop-entry`, keeping `Type=Application` entries that are
   neither `NoDisplay` nor `Hidden` and that show on the current desktop set
@@ -161,7 +173,8 @@ app, press Escape, or click outside the card.
   while `%f`/`%F`/`%u`/`%U` and unknown or deprecated codes drop out.
   `Terminal=true` entries run inside `$TERMINAL` (or the first of a few common
   emulators found on `PATH`), and the child is spawned detached with its
-  standard streams pointed at `/dev/null`.
+  standard streams pointed at `/dev/null`; a spawn failure is reported on
+  stderr with the app name. The launcher then exits immediately with success.
 
 ## Planned surfaces (spec captured, not built)
 
