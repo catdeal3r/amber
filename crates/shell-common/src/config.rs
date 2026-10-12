@@ -5,7 +5,7 @@
 //! pinned [`Theme`] defaults — so changing the typeface or metrics is
 //! a one-file change, per the "make it easy to change" requirement.
 
-use iced_core::Font;
+use iced_core::{ContentFit, Font};
 
 use crate::theme::{Fonts, Theme};
 
@@ -14,12 +14,57 @@ struct RawConfig {
     font: Option<RawFonts>,
     #[allow(dead_code)]
     metrics: Option<serde::de::IgnoredAny>,
+    wallpaper: Option<RawWallpaper>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 struct RawFonts {
     text: Option<String>,
     icon: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+struct RawWallpaper {
+    /// Absolute path to the image. `None` keeps the solid `bg`.
+    path: Option<String>,
+    /// `cover` (default), `contain`, `fill` or `none`.
+    fit: Option<String>,
+}
+
+/// Wallpaper settings from `[wallpaper]`.
+#[derive(Debug, Clone)]
+pub struct WallpaperConfig {
+    /// Image to paint; `None` renders the solid `bg` colour instead.
+    pub path: Option<std::path::PathBuf>,
+    /// How the image fills the output.
+    pub fit: ContentFit,
+}
+
+impl Default for WallpaperConfig {
+    fn default() -> Self {
+        Self {
+            path: None,
+            fit: ContentFit::Cover,
+        }
+    }
+}
+
+/// Load the `[wallpaper]` section, falling back to the solid background.
+pub fn wallpaper() -> WallpaperConfig {
+    let Some(cfg) = read() else {
+        return WallpaperConfig::default();
+    };
+    let raw = cfg.wallpaper.unwrap_or_default();
+
+    WallpaperConfig {
+        path: raw.path.map(std::path::PathBuf::from),
+        fit: match raw.fit.as_deref() {
+            Some("contain") => ContentFit::Contain,
+            Some("fill") => ContentFit::Fill,
+            Some("none") => ContentFit::None,
+            _ => ContentFit::Cover,
+        },
+    }
 }
 
 /// Load fonts from the config file, falling back to `base` values.

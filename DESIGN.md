@@ -86,6 +86,16 @@ pager is stacked on top and centered on the bar's full width.
 - Battery via `upower` over D-Bus (currently sysfs).
 - Scroll-wheel to cycle workspaces.
 
+## The wallpaper (`amber-wallpaper`)
+
+A `Layer::Background` surface anchored to every edge, so it fills the output
+behind all windows; input passes through (`events_transparent`) and the keyboard
+interaction is `None`. The configured image is decoded up front and handed to
+iced as raw RGBA (the same path as the bundled assets), so any format the `image`
+crate can read works without iced's codec features. With no `path` set it just
+fills with the theme `bg`. Passing an output name as the first argument pins it
+to that output, otherwise it follows the active one.
+
 ## Planned surfaces (spec captured, not built)
 
 - **Launcher** (`500px` centered overlay, r10, keyboard-exclusive): search pill
@@ -107,6 +117,10 @@ Optional `~/.config/amber/config.toml` overrides the pinned defaults:
 [font]
 text = "monospace"
 icon = "Material Symbols Sharp"
+
+[wallpaper]
+path = "/home/me/pictures/wall.png"
+fit = "cover" # cover | contain | fill | none
 ```
 
 Loaded once at startup by `shell-common::config`. Colours are intentionally
@@ -122,9 +136,21 @@ NixOS default path, so use the devshell:
 nix develop -c cargo run -p panel
 ```
 
-Run it from inside a niri session (it needs a Wayland display). To autostart it,
-add an `exec`/`spawn-at-startup` line to `~/.config/niri/config.kdl` once the
-flakes' binaries are packaged, e.g. `spawn-at-startup "amber-panel"`.
+Run it from inside a niri session (it needs a Wayland display). Until the flake
+packages the binaries (see *Later*), autostart the debug build through the
+devshell so it picks up the native libraries:
+
+```kdl
+spawn-at-startup "sh" "-c" "cd /home/catdealer/amber && nix develop -c cargo run -p panel"
+```
+
+## Later
+
+- **Packaging & release script.** Build the binaries with `rustPlatform`
+  (`buildRustPackage`), wrapping each with an `LD_LIBRARY_PATH` that points at the
+  Wayland/GL/fontconfig libraries, and add a release build script. Then switch
+  niri `spawn-at-startup` from the `nix develop` debug invocation above to the
+  packaged `amber-panel`.
 
 ## Dependency notes
 

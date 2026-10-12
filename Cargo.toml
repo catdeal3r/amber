@@ -6,6 +6,7 @@ members = [
     "crates/launcher",
     "crates/notifd",
     "crates/locker",
+    "crates/wallpaper",
 ]
 
 [workspace.package]
@@ -19,7 +20,7 @@ version = "0.1.0"
 # gives us the image widget without pulling the heavy AVIF (rav1e) codecs;
 # we opt into just the `png` codec below.
 iced = { version = "0.14", features = ["image-without-codecs", "svg", "tokio"] }
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 iced_layershell = "0.19.1"
 chrono = "0.4"
 serde = { version = "1", features = ["derive"] }
