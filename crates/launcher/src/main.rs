@@ -8,9 +8,7 @@ mod apps;
 mod exec;
 
 use iced::animation::Easing;
-use iced::widget::{
-    Id, Space, Stack, button, column, container, mouse_area, row, text, text_input,
-};
+use iced::widget::{Id, Space, Stack, column, container, mouse_area, row, text, text_input};
 use iced::{Alignment, Border, Color, Element, Length, Subscription, Task};
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer};
 use iced_layershell::settings::{LayerShellSettings, StartMode};
@@ -22,10 +20,13 @@ use std::time::{Duration, Instant};
 /// How many result rows fit on screen at once.
 const MAX_ROWS: usize = 8;
 const ROW_HEIGHT: f32 = 38.0;
+const ROW_SPACING: f32 = 4.0;
 const SEARCH_HEIGHT: f32 = 40.0;
 
 /// How long the open/close slide-and-fade takes.
 const SLIDE_DURATION: Duration = Duration::from_millis(200);
+/// How long the selection highlight takes to slide between rows.
+const SELECT_DURATION: Duration = Duration::from_millis(160);
 /// The animation frame interval while the launcher is animating.
 const FRAME: Duration = Duration::from_millis(16);
 
@@ -48,6 +49,8 @@ enum Message {
     Dismiss,
     /// Absorb a click on the card's own background.
     Noop,
+    /// The pointer entered or left a result row (its index into `results`).
+    Hover(Option<usize>),
     /// Advance the open/close animation to this instant.
     Tick(Instant),
 }
@@ -71,10 +74,14 @@ struct Launcher {
     input_id: Id,
     /// `false` = hidden, `true` = shown; drives the slide-and-fade.
     progress: iced::Animation<bool>,
-    /// The instant of the most recent frame, used to project `progress`.
+    /// The visual row the selection highlight is sliding from/to.
+    selection: iced::Animation<f32>,
+    /// The instant of the most recent frame, used to project the animations.
     now: Instant,
     /// Set while closing, carried out once the animation settles.
     closing: Option<Close>,
+    /// The row the pointer is over (an index into `results`).
+    hovered: Option<usize>,
 }
 
 impl Launcher {
@@ -91,8 +98,12 @@ impl Launcher {
             progress: iced::Animation::new(false)
                 .duration(SLIDE_DURATION)
                 .easing(Easing::EaseOutCubic),
+            selection: iced::Animation::new(0.0)
+                .duration(SELECT_DURATION)
+                .easing(Easing::EaseOutCubic),
             now: Instant::now(),
             closing: None,
+            hovered: None,
         }
     }
 
@@ -108,17 +119,31 @@ impl Launcher {
 
     fn recompute(&mut self) {
         self.results = apps::search(&self.apps, &self.query);
-        self.selected = 0;
+        self.hovered = None;
+        self.select(0);
+    }
+
+    /// Selects a result, animating the highlight from wherever it currently is.
+    fn select(&mut self, selected: usize) {
+        self.selected = selected;
+        self.now = Instant::now();
+        self.selection.go_mut(self.target_visual(), self.now);
+    }
+
+    /// The row the highlight should sit on within the visible window.
+    fn target_visual(&self) -> f32 {
+        (self.selected - self.window().start) as f32
     }
 
     fn move_selection(&mut self, delta: i32) {
         let len = self.results.len();
         if len == 0 {
-            self.selected = 0;
+            self.select(0);
             return;
         }
         let current = self.selected.min(len - 1) as i32;
-        self.selected = (current + delta).rem_euclid(len as i32) as usize;
+        let next = (current + delta).rem_euclid(len as i32) as usize;
+        self.select(next);
     }
 
     /// The half-open range of `results` currently on screen, scrolled so the
@@ -166,7 +191,7 @@ fn update(state: &mut Launcher, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::LaunchIndex(index) => {
-            state.selected = index;
+            state.select(index);
             if let Some(&app_index) = state.results.get(index) {
                 state.begin_close(Close::Launch(app_index));
             }
@@ -177,6 +202,10 @@ fn update(state: &mut Launcher, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::Noop => Task::none(),
+        Message::Hover(hovered) => {
+            state.hovered = hovered;
+            Task::none()
+        }
         Message::Tick(now) => {
             state.now = now;
             if state.progress.is_animating(now) {
@@ -207,7 +236,9 @@ fn update(state: &mut Launcher, message: Message) -> Task<Message> {
 fn subscription(state: &Launcher) -> Subscription<Message> {
     // Only drive frames while there is something to animate, including the
     // final tick that carries out a pending close.
-    let animating = state.closing.is_some() || state.progress.is_animating(state.now);
+    let animating = state.closing.is_some()
+        || state.progress.is_animating(state.now)
+        || state.selection.is_animating(state.now);
     let tick = if animating {
         iced::time::every(FRAME).map(Message::Tick)
     } else {
@@ -303,13 +334,10 @@ fn view(state: &Launcher) -> Element<'_, Message> {
         ..container::Style::default()
     });
 
-    let window = state.window();
-    let rows: Vec<Element<'_, Message>> = window
-        .clone()
-        .map(|index| result_row(state, index, index == state.selected, t))
-        .collect();
+    let start = state.window().start;
+    let count = state.window().len();
 
-    let body: Element<'_, Message> = if rows.is_empty() {
+    let body: Element<'_, Message> = if count == 0 {
         container(
             text("No matches")
                 .size(13.0)
@@ -322,7 +350,59 @@ fn view(state: &Launcher) -> Element<'_, Message> {
         .align_y(Alignment::Center)
         .into()
     } else {
-        column(rows).spacing(4.0).into()
+        // The list is three stacked layers: row backgrounds, then the sliding
+        // accent band, then the labels on top (which also take the input). This
+        // lets the highlight move between rows instead of jumping.
+        let body_height = count as f32 * ROW_HEIGHT + count.saturating_sub(1) as f32 * ROW_SPACING;
+
+        let backgrounds: Vec<Element<'_, Message>> = (0..count)
+            .map(|v| {
+                let fill = if state.hovered == Some(start + v) {
+                    palette.hover
+                } else {
+                    palette.surface
+                };
+                container(row_background())
+                    .width(Length::Fill)
+                    .height(Length::Fixed(ROW_HEIGHT))
+                    .style(move |_theme: &iced::Theme| container::Style {
+                        background: Some(fill.scale_alpha(t).into()),
+                        ..container::Style::default()
+                    })
+                    .into()
+            })
+            .collect();
+
+        let band = state
+            .selection
+            .interpolate_with(|v| v, state.now)
+            .clamp(0.0, count.saturating_sub(1) as f32);
+        let offset = band * (ROW_HEIGHT + ROW_SPACING);
+        let accent = column![
+            Space::new().height(Length::Fixed(offset)),
+            container(row_background())
+                .width(Length::Fill)
+                .height(Length::Fixed(ROW_HEIGHT))
+                .style(move |_theme: &iced::Theme| container::Style {
+                    background: Some(palette.accent_fill.scale_alpha(t).into()),
+                    ..container::Style::default()
+                }),
+            Space::new().height(Length::Fill),
+        ]
+        .width(Length::Fill)
+        .height(Length::Fill);
+
+        let labels: Vec<Element<'_, Message>> = (0..count)
+            .map(|v| result_row(state, start + v, start + v == state.selected, t))
+            .collect();
+
+        Stack::new()
+            .width(Length::Fill)
+            .height(Length::Fixed(body_height))
+            .push(column(backgrounds).spacing(ROW_SPACING).width(Length::Fill))
+            .push(accent)
+            .push(column(labels).spacing(ROW_SPACING).width(Length::Fill))
+            .into()
     };
 
     let card = container(column![pill, body].spacing(8.0))
@@ -366,7 +446,13 @@ fn view(state: &Launcher) -> Element<'_, Message> {
     overlays.into()
 }
 
-/// One result row: the app name, with its generic name underneath when known.
+/// An empty filler used to give a row the right size for its background/accent.
+fn row_background() -> Space {
+    Space::new().width(Length::Fill).height(Length::Fill)
+}
+
+/// One result row's labels: the app name, with its generic name underneath when
+/// known. This is the top layer of the list, and it also takes the pointer.
 fn result_row<'a>(
     state: &'a Launcher,
     index: usize,
@@ -404,34 +490,17 @@ fn result_row<'a>(
         );
     }
 
-    button(
+    mouse_area(
         container(labels)
             .width(Length::Fill)
-            .height(Length::Fill)
+            .height(Length::Fixed(ROW_HEIGHT))
             .align_x(Alignment::Start)
             .align_y(Alignment::Center)
             .padding([0.0, 12.0]),
     )
-    .width(Length::Fill)
-    .height(Length::Fixed(ROW_HEIGHT))
-    .padding(0)
     .on_press(Message::LaunchIndex(index))
-    .style(move |_theme: &iced::Theme, status: button::Status| {
-        let background = if selected {
-            palette.accent_fill
-        } else {
-            match status {
-                button::Status::Hovered | button::Status::Pressed => palette.hover,
-                _ => palette.surface,
-            }
-        };
-        button::Style {
-            background: Some(background.scale_alpha(t).into()),
-            text_color: color,
-            border: Border::default(),
-            ..button::Style::default()
-        }
-    })
+    .on_enter(Message::Hover(Some(index)))
+    .on_exit(Message::Hover(None))
     .into()
 }
 

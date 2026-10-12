@@ -147,9 +147,16 @@ exits.
   selection).
 - **Rows** (`surface`, square corners, h38): the app name, with its
   `GenericName` underneath (11px) in the row color at 60% opacity when the entry
-  has one. Unselected rows are `muted` with a `hover` fill on hover; the
-  highlighted row uses `accent_fill` with both texts in `text` (white). Clicking
-  a row launches it.
+  has one. Unselected rows are `muted`; the selected row's texts are `text`
+  (white). Hover is tracked in the app state and paints `hover` on the row
+  background; clicking a row launches it. The list is three stacked layers — row
+  backgrounds, the `accent_fill` highlight band, then the labels (drawn on top
+  and taking the pointer) — so the highlight can move without dragging the text.
+- **Selection highlight:** a single `accent_fill` band that translates between
+  rows over `160ms` (`EaseOutCubic`) as the selection moves, rather than the
+  fill jumping row to row. It animates the on-screen row position, so scrolling
+  the visible window doesn't trigger a spurious slide; a second
+  `Animation<f32>`, advanced by the same `16ms` tick subscription, positions it.
 - **Keys:** type to filter, `↑`/`↓` move the selection (wrapping), `Enter`
   launches, `Escape` closes. Up to eight rows fit at once (`MAX_ROWS`) and the
   window scrolls to keep the selection visible; an empty result set shows a
