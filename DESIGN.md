@@ -123,7 +123,10 @@ path = "/home/me/pictures/wall.png"
 fit = "cover" # cover | contain | fill | none
 ```
 
-Loaded once at startup by `shell-common::config`. Colours are intentionally
+Loaded once at startup by `shell-common::config`, which exposes a small manager:
+`config::get()` returns the current snapshot, `config::reload()` re-reads the
+file, and `config::path()` reports the location. `config::theme()` and
+`config::wallpaper()` are conveniences over it. Colours are intentionally
 pinned to `fuji`; a wallust-driven `colours.json` watcher is a possible later
 addition.
 

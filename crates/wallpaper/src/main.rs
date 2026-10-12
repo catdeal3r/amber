@@ -89,7 +89,7 @@ fn main() -> Result<(), iced_layershell::Error> {
 fn update(state: &mut Background, message: Message) -> Command<Message> {
     match message {
         Message::Reload => {
-            let cfg = config::wallpaper();
+            let cfg = config::reload().wallpaper;
             state.image = cfg.path.as_deref().and_then(load);
             state.fit = cfg.fit;
             Command::none()
