@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/shell-common",
+    "crates/panel",
+    "crates/launcher",
+    "crates/notifd",
+    "crates/locker",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+version = "0.1.0"
+
+[workspace.dependencies]
+# `tokio` switches iced's runtime backend from thread-pool (whose `time`
+# module is empty) to tokio, which provides `time::every`. `image-without-codecs`
+# gives us the image widget without pulling the heavy AVIF (rav1e) codecs;
+# we opt into just the `png` codec below.
+iced = { version = "0.14", features = ["image-without-codecs", "svg", "tokio"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+iced_layershell = "0.19.1"
+chrono = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+tokio = { version = "1", features = ["time", "process", "macros", "rt-multi-thread"] }
+
+[profile.release]
+lto = true

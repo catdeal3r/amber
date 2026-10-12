@@ -1,0 +1,17 @@
+[package]
+name = "notifd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "amber-notifd"
+path = "src/main.rs"
+
+[dependencies]
+shell-common = { path = "../shell-common" }
+iced = { workspace = true }
+iced_layershell = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }

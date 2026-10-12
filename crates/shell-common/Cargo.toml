@@ -1,0 +1,11 @@
+[package]
+name = "shell-common"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+iced_core = "0.14"
+image = { workspace = true }
+toml = { workspace = true }
+serde = { workspace = true }
