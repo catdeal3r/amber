@@ -8,6 +8,7 @@ pub mod battery;
 pub mod bluetooth;
 pub mod config;
 pub mod theme;
+pub mod tray;
 pub mod wifi;
 
 pub use theme::{Fonts, Metrics, Palette, Theme, FUJI};

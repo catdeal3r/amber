@@ -1,5 +1,8 @@
 # TODOs in order of importance
-- [ ] Add tray icons to bar
+- [x] Add tray icons to bar
+- [ ] Tray item interaction
+  - [ ] Left click -> Activate, middle/right click -> SecondaryActivate
+  - [ ] Context menus via com.canonical.dbusmenu
 - [ ] Hover of time, battery, and wifi/bluetooth reveal extra information
 - [ ] Lockscreen and swayidle integration
   - [ ] Time

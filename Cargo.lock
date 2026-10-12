@@ -3223,6 +3223,7 @@ dependencies = [
  "image",
  "serde",
  "toml",
+ "zbus",
 ]
 
 [[package]]

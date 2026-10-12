@@ -6,6 +6,7 @@
 
 mod niri;
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use iced::widget::{button, container, image, row, text, Space, Stack};
@@ -16,6 +17,7 @@ use iced_layershell::{application, to_layer_message};
 use shell_common::battery::{Battery, Status};
 use shell_common::bluetooth::{self, Bluetooth};
 use shell_common::theme::{Metrics, Theme};
+use shell_common::tray::{self, Tray, TrayItem};
 use shell_common::wifi::{self, Wifi};
 use shell_common::{assets, config};
 
@@ -28,6 +30,8 @@ enum Message {
     Clock,
     /// Re-read the battery, Wi-Fi and Bluetooth state.
     PollStatus,
+    /// Re-read the system tray snapshot.
+    PollTray,
     /// Switch to a workspace by index.
     FocusWorkspace(u32),
     /// Toggle the Wi-Fi radio.
@@ -43,6 +47,12 @@ struct Panel {
     battery: Option<Battery>,
     wifi: Option<Wifi>,
     bluetooth: Option<Bluetooth>,
+    /// Live handle to the tray watcher; `tray_items` is its last snapshot.
+    tray: Tray,
+    tray_items: Vec<TrayItem>,
+    /// Decoded iced handles, keyed by item id. Cached so an unchanged icon
+    /// isn't re-uploaded to the GPU every poll.
+    tray_icons: HashMap<String, (tray::Icon, image::Handle)>,
     logo: image::Handle,
     config_error: Option<String>,
 }
@@ -51,6 +61,8 @@ impl Panel {
     fn new(theme: Theme) -> Self {
         let nix = assets::nix_bar();
         let logo = image::Handle::from_rgba(nix.width, nix.height, nix.pixels.clone());
+        let tray = Tray::spawn();
+        let tray_items = tray.items();
 
         Self {
             theme,
@@ -59,6 +71,9 @@ impl Panel {
             battery: Battery::read(),
             wifi: wifi::read(),
             bluetooth: bluetooth::read(),
+            tray,
+            tray_items,
+            tray_icons: HashMap::new(),
             logo,
             config_error: config::startup_error(),
         }
@@ -81,6 +96,39 @@ fn update(state: &mut Panel, message: Message) -> Task<Message> {
             state.battery = Battery::read();
             state.wifi = wifi::read();
             state.bluetooth = bluetooth::read();
+        }
+        Message::PollTray => {
+            let items = state.tray.items();
+
+            // Re-upload only icons whose pixels actually changed.
+            for item in &items {
+                match &item.icon {
+                    Some(icon) => {
+                        let unchanged = state
+                            .tray_icons
+                            .get(&item.id)
+                            .is_some_and(|(cached, _)| cached == icon);
+                        if !unchanged {
+                            let handle = image::Handle::from_rgba(
+                                icon.width,
+                                icon.height,
+                                icon.pixels.clone(),
+                            );
+                            state
+                                .tray_icons
+                                .insert(item.id.clone(), (icon.clone(), handle));
+                        }
+                    }
+                    None => {
+                        state.tray_icons.remove(&item.id);
+                    }
+                }
+            }
+
+            state
+                .tray_icons
+                .retain(|id, _| items.iter().any(|item| &item.id == id));
+            state.tray_items = items;
         }
         Message::FocusWorkspace(idx) => niri::focus_workspace(idx),
         Message::ToggleWifi => {
@@ -118,6 +166,7 @@ fn subscription(_state: &Panel) -> iced::Subscription<Message> {
         iced::time::every(Duration::from_millis(400)).map(|_| Message::PollWorkspaces),
         iced::time::every(Duration::from_secs(1)).map(|_| Message::Clock),
         iced::time::every(Duration::from_secs(5)).map(|_| Message::PollStatus),
+        iced::time::every(Duration::from_secs(1)).map(|_| Message::PollTray),
     ])
 }
 
@@ -155,6 +204,7 @@ fn view(state: &Panel) -> Element<'_, Message> {
     };
 
     let mut right_items: Vec<Element<'_, Message>> = Vec::new();
+    right_items.extend(tray_indicators(state));
     if state.wifi.is_some() {
         right_items.push(wifi_indicator(state));
     }
@@ -292,6 +342,39 @@ fn bluetooth_indicator(state: &Panel) -> Element<'_, Message> {
         color,
         Message::ToggleBluetooth,
     )
+}
+
+/// One icon per registered tray item, in registration order.
+fn tray_indicators(state: &Panel) -> Vec<Element<'_, Message>> {
+    state
+        .tray_items
+        .iter()
+        .map(|item| tray_icon(state, item))
+        .collect()
+}
+
+/// A single tray icon: the item's decoded pixmap, or a muted dot when the item
+/// offers no icon we can render.
+fn tray_icon<'a>(state: &'a Panel, item: &'a TrayItem) -> Element<'a, Message> {
+    let palette = state.theme.palette;
+    let fonts = state.theme.fonts;
+    let size = state.theme.metrics.bar_height * 0.45;
+
+    match state.tray_icons.get(&item.id) {
+        Some((_, handle)) => image(handle.clone())
+            .width(Length::Fixed(size))
+            .height(Length::Fixed(size))
+            .content_fit(ContentFit::Contain)
+            .into(),
+        None => text("\u{2022}")
+            .font(fonts.text)
+            .size(size * 0.6)
+            .color(match item.status {
+                tray::TrayStatus::NeedsAttention => palette.yellow,
+                _ => palette.muted,
+            })
+            .into(),
+    }
 }
 
 /// Picks a `network_wifi_*` glyph for a signal level.

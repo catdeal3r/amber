@@ -29,6 +29,10 @@ toml = "0.8"
 tokio = { version = "1", features = ["time", "process", "macros", "rt-multi-thread"] }
 freedesktop-desktop-entry = "0.8"
 nucleo-matcher = "0.3"
+# StatusNotifierItem tray host. Default features are `async-io` + `blocking-api`;
+# we drive the watcher from its own thread with the blocking API, so no extra
+# runtime feature is needed.
+zbus = "5"
 
 [profile.release]
 lto = true

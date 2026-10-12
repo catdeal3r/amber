@@ -54,9 +54,9 @@ A single surface anchored to the **top** edge, full width, `42px` tall, with a
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
-│  ❄       1  2  3  4  5                   wifi bt  ▮▮▯  09:41 AM     │
+│  ❄       1  2  3  4  5            ▣ ▣  wifi bt  ▮▮▯  09:41 AM      │
 └───────────────────────────────────────────────────────────────────┘
-   logo            workspace pager         wifi bt battery  clock
+   logo            workspace pager   tray    wifi bt battery  clock
 ```
 
 - **Left:** the Nix snowflake (`shell-common::assets::nix_bar()`), vertically
@@ -68,8 +68,10 @@ A single surface anchored to the **top** edge, full width, `42px` tall, with a
   - empty → `muted`
   - hover → `hover` fill, `6px` radius
   - left click → `niri msg action focus-workspace <idx>`
-- **Right:** Wi-Fi, Bluetooth, then battery, then the clock; each indicator is
-  omitted entirely when its hardware is absent.
+- **Right:** tray icons, then Wi-Fi, Bluetooth, battery, then the clock; each
+  indicator is omitted entirely when its hardware is absent.
+  - **Tray** (`shell-common::tray`): one icon per registered StatusNotifierItem,
+    in registration order (see [System tray](#system-tray)).
   - **Wi-Fi** (`shell-common::wifi`, via `nmcli`): `wifi_off` in `muted` when
     the radio is off, a stepped `network_wifi_*` glyph in `text` when connected,
     and `wifi_find` in `muted` when on but not associated. Left click toggles
@@ -92,10 +94,37 @@ polling never triggers a scan. All are subscriptions in
 `crates/panel/src/main.rs`. The left/right clusters sit on a base row while the
 pager is stacked on top and centered on the bar's full width.
 
+### System tray
+
+niri has no tray, so `amber-panel` hosts the freedesktop StatusNotifierItem
+protocol itself (`shell-common::tray`). It owns the well-known D-Bus name
+`org.kde.StatusNotifierWatcher` and exports the watcher interface at
+`/StatusNotifierWatcher`: items call `RegisterStatusNotifierItem`, and the
+snapshot is refreshed once per second from each item's `Id`, `Title`, `Status`,
+`IconPixmap` and `IconName`.
+
+- Icons prefer the item's own `IconPixmap` (ARGB32, converted to RGBA; the
+  largest valid pixmap wins), falling back to a themed `IconName` resolved
+  across the XDG icon directories, preferring larger size variants. Items with
+  no decodable icon show a small `muted` (or `yellow`, when the item wants
+  attention) dot.
+- The watcher runs on its own thread with zbus's blocking API, so the UI never
+  waits on the bus. Items whose bus name disappears are pruned from the
+  snapshot and from `RegisteredStatusNotifierItems`.
+- Rendering only: clicking a tray item does nothing yet (context menus and
+  activate are a follow-up).
+
+The watcher is verified by
+`crates/shell-common/tests/tray_host.rs`, which starts a private `dbus-daemon`,
+publishes a fake item, and asserts it appears in the snapshot with its icon
+decoded.
+
 ### Not yet in the bar
 
 - Battery via `upower` over D-Bus (currently sysfs).
 - Wi-Fi/Bluetooth via D-Bus (currently `nmcli`/`bluetoothctl`).
+- Tray item interaction: `Activate`/`SecondaryActivate` and `com.canonical.dbusmenu`
+  context menus.
 - Scroll-wheel to cycle workspaces.
 
 ## The wallpaper (`amber-wallpaper`)
@@ -290,5 +319,7 @@ iterating on one component, `./build.sh amber-panel` (etc.) is usually enough.
   against `beta.3`, which added `#[non_exhaustive]` to `NativeKeyCode`.
 - The launcher adds `freedesktop-desktop-entry 0.8` (`.desktop` discovery and
   localized fields, MPL-2.0) and `nucleo-matcher 0.3` (fuzzy scoring, MPL-2.0).
+- The tray host adds `zbus 5` (MIT). It uses the default `async-io` runtime and
+  the blocking API from a dedicated thread; no tokio integration is needed.
 - Nix logo is rasterised to PNG at build-asset time rather than shipped as SVG
   (see `crates/shell-common/src/assets.rs` for the regeneration command).
