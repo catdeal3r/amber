@@ -159,15 +159,22 @@ NixOS default path, so build through the devshell. `build.sh` does this and
 collects ready-to-run binaries in one directory:
 
 ```sh
-./build.sh          # release build of the whole workspace -> ./dist
-./dist/amber-panel  # run straight from the output directory
+./build.sh                       # release build of the whole workspace -> ./dist
+./build.sh amber-panel           # just one binary -> ./dist
+./build.sh amber-panel amber-locker
+./build.sh -o /tmp/out amber-locker
+./dist/amber-panel               # run straight from the output directory
 ```
 
-It re-execs into the devshell, runs `cargo build --release --locked --workspace`,
-copies each binary into `dist/`, and `patchelf`s an RPATH onto them pointing at
-the devshell's Wayland/GL/fontconfig libraries, so no `cargo run` or
-`nix develop` is needed at runtime. For quick iteration a debug build still works
-via `nix develop -c cargo run -p panel`.
+It re-execs into the devshell, runs `cargo build --release --locked` (the whole
+workspace, or just the named packages), copies each binary into `dist/`, and
+`patchelf`s an RPATH onto them pointing at the devshell's Wayland/GL/fontconfig
+libraries, so no `cargo run` or `nix develop` is needed at runtime. Naming one or
+more binaries builds and patches only those, leaving the rest of the output
+directory untouched — handy when iterating on a single component. Binaries are
+unlinked before being replaced, so a running instance doesn't block the copy.
+For quick iteration a debug build still works via
+`nix develop -c cargo run -p panel`.
 
 Run it from inside a niri session (it needs a Wayland display). niri autostarts
 the release binaries directly:
@@ -177,7 +184,8 @@ spawn-at-startup "sh" "-c" "/home/catdealer/amber/dist/amber-panel"
 spawn-at-startup "sh" "-c" "/home/catdealer/amber/dist/amber-wallpaper"
 ```
 
-Re-run `./build.sh` after pulling changes so those paths stay up to date.
+Re-run `./build.sh` after pulling changes so those paths stay up to date. When
+iterating on one component, `./build.sh amber-panel` (etc.) is usually enough.
 
 ## Later
 
