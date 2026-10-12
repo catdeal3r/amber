@@ -1,14 +1,11 @@
 # TODOs in order of importance
-- [ ] Add tray icons to bar
-  - [x] Icon display
-  - [ ] Left/right click control
-  - [ ] Dropdown menus
 - [ ] Hover of time, battery, and wifi/bluetooth reveal extra information
 - [ ] Lockscreen and swayidle integration
   - [ ] Time
   - [ ] Media Player
   - [ ] Animations
   - [ ] Swayidle lock on return from sleep
+- [ ] Brightness and volume popups
 - [ ] Notifications
   - [ ] Basic title and body
   - [ ] Title wraps

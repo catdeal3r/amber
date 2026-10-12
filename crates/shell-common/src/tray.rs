@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -19,6 +20,7 @@ use zbus::blocking::Connection;
 use zbus::blocking::connection;
 use zbus::names::BusName;
 use zbus::object_server::SignalEmitter;
+use zbus::zvariant::{OwnedObjectPath, OwnedValue, Structure, Value};
 
 /// How often the background thread refreshes the snapshot.
 const POLL: Duration = Duration::from_secs(1);
@@ -51,25 +53,101 @@ pub struct Icon {
 /// Everything the bar needs to draw one tray item.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrayItem {
-    /// The item's own `Id`, used as a stable key (falls back to the bus name).
+    /// Stable identity (bus name plus object path), used to route clicks.
+    pub key: String,
+    /// The item's own `Id`, used for display/grouping.
     pub id: String,
     /// Human-readable title, if the item provides one.
     pub title: Option<String>,
     /// Attention state.
     pub status: TrayStatus,
+    /// Whether the item only offers a menu, so a left click should open it.
+    pub is_menu: bool,
     /// Largest icon pixmap the item offers, or a themed icon resolved from
     /// `IconName`. `None` when neither could be decoded.
     pub icon: Option<Icon>,
 }
 
+/// Kind of toggle a menu item draws, mirroring DBusMenu's `toggle-type`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Toggle {
+    /// A plain item.
+    #[default]
+    None,
+    /// A checkmark that stands alone.
+    Checkbox,
+    /// A radio button within a group.
+    Radio,
+}
+
+/// One selectable row in a tray context menu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuItem {
+    /// The DBusMenu item id, echoed back when the row is clicked.
+    pub id: i32,
+    /// Display label, with mnemonics stripped.
+    pub label: String,
+    /// Whether the item can currently be activated.
+    pub enabled: bool,
+    /// Toggle style, if any.
+    pub toggle: Toggle,
+    /// Whether a toggle is currently on.
+    pub checked: bool,
+    /// Nesting level, used for indentation. The top level is `0`.
+    pub depth: u8,
+    /// Whether this row opens a submenu (its children follow it inline).
+    pub has_submenu: bool,
+}
+
+/// A row of a context menu: an item or a horizontal rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MenuEntry {
+    /// A horizontal separator.
+    Separator,
+    /// A selectable item.
+    Item(MenuItem),
+}
+
+/// A snapshot of one item's context menu, ready to draw.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrayMenu {
+    /// The item this menu belongs to.
+    pub key: String,
+    /// The DBusMenu revision the snapshot was read at.
+    pub revision: u32,
+    /// The flattened menu, depth-first, with submenu children inlined.
+    pub entries: Vec<MenuEntry>,
+}
+
+/// A request from the UI to drive an item's mouse actions.
+enum Command {
+    Activate { key: String, x: i32, y: i32 },
+    SecondaryActivate { key: String, x: i32, y: i32 },
+    ContextMenu { key: String, x: i32, y: i32 },
+    MenuEvent { key: String, id: i32 },
+}
+
+impl Command {
+    /// The item this command targets.
+    fn key(&self) -> &str {
+        match self {
+            Command::Activate { key, .. }
+            | Command::SecondaryActivate { key, .. }
+            | Command::ContextMenu { key, .. }
+            | Command::MenuEvent { key, .. } => key,
+        }
+    }
+}
+
 /// A handle to the running tray watcher.
 ///
-/// Cloning shares the same snapshot. Dropping the last handle does not stop
-/// the background thread (it lives for the process), but the snapshot is only
-/// as fresh as the last poll.
+/// Cloning shares the same snapshot and command queue. Dropping every handle
+/// stops the background thread, which releases the watcher's bus name.
 #[derive(Clone)]
 pub struct Tray {
     items: Arc<Mutex<Vec<TrayItem>>>,
+    menus: Arc<Mutex<Option<TrayMenu>>>,
+    commands: Sender<Command>,
 }
 
 impl Tray {
@@ -79,12 +157,15 @@ impl Tray {
     /// the reason to stderr; it never panics or blocks startup.
     pub fn spawn() -> Self {
         let items = Arc::new(Mutex::new(Vec::new()));
-        let shared = items.clone();
+        let menus = Arc::new(Mutex::new(None));
+        let (commands, receiver) = mpsc::channel();
 
+        let shared = items.clone();
+        let menu_slot = menus.clone();
         let spawned = std::thread::Builder::new()
             .name("amber-tray".into())
             .spawn(move || {
-                if let Err(err) = run(shared) {
+                if let Err(err) = run(shared, menu_slot, receiver) {
                     eprintln!("amber: tray watcher stopped: {err}");
                 }
             });
@@ -93,12 +174,66 @@ impl Tray {
             eprintln!("amber: could not start tray watcher: {err}");
         }
 
-        Self { items }
+        Self {
+            items,
+            menus,
+            commands,
+        }
     }
 
     /// A copy of the current snapshot.
     pub fn items(&self) -> Vec<TrayItem> {
         self.items.lock().expect("tray snapshot poisoned").clone()
+    }
+
+    /// Take the most recently prepared context menu, if one is waiting.
+    ///
+    /// The UI calls this after requesting a menu; a successful take consumes
+    /// the snapshot, since menus are frozen once shown.
+    pub fn take_menu(&self) -> Option<TrayMenu> {
+        self.menus.lock().expect("tray menu poisoned").take()
+    }
+
+    /// Ask an item to activate itself (a left click).
+    pub fn activate(&self, key: &str) {
+        self.send(Command::Activate {
+            key: key.to_string(),
+            x: 0,
+            y: 0,
+        });
+    }
+
+    /// Ask an item for a secondary activation (a middle click).
+    pub fn secondary_activate(&self, key: &str) {
+        self.send(Command::SecondaryActivate {
+            key: key.to_string(),
+            x: 0,
+            y: 0,
+        });
+    }
+
+    /// Ask an item to show its context menu (a right click).
+    ///
+    /// When the item publishes a DBusMenu it is snapshot into the shared slot
+    /// for the UI to draw; otherwise the item's own `ContextMenu` is invoked.
+    pub fn context_menu(&self, key: &str) {
+        self.send(Command::ContextMenu {
+            key: key.to_string(),
+            x: 0,
+            y: 0,
+        });
+    }
+
+    /// Tell an item that one of its menu rows was clicked.
+    pub fn menu_click(&self, key: &str, id: i32) {
+        self.send(Command::MenuEvent {
+            key: key.to_string(),
+            id,
+        });
+    }
+
+    fn send(&self, command: Command) {
+        let _ = self.commands.send(command);
     }
 }
 
@@ -227,10 +362,71 @@ trait StatusNotifierItem {
 
     #[zbus(property(emits_changed_signal = "false"))]
     fn icon_pixmap(&self) -> zbus::Result<Vec<(i32, i32, Vec<u8>)>>;
+
+    #[zbus(property(emits_changed_signal = "false"))]
+    fn item_is_menu(&self) -> zbus::Result<bool>;
+
+    #[zbus(property(emits_changed_signal = "false"))]
+    fn menu(&self) -> zbus::Result<OwnedObjectPath>;
+
+    /// Primary activation (left click).
+    fn activate(&self, x: i32, y: i32) -> zbus::Result<()>;
+
+    /// Secondary activation (middle click).
+    fn secondary_activate(&self, x: i32, y: i32) -> zbus::Result<()>;
+
+    /// Ask the item to show its context menu (right click).
+    fn context_menu(&self, x: i32, y: i32) -> zbus::Result<()>;
 }
 
-/// Own the watcher name, then refresh the snapshot forever.
-fn run(shared: Arc<Mutex<Vec<TrayItem>>>) -> zbus::Result<()> {
+/// One node of a `com.canonical.dbusmenu` layout: `(ia{sv}av)`.
+///
+/// Children stay as raw [`OwnedValue`]s and are decoded one level at a time by
+/// [`parse_node`]. A self-referential `Type` can't be spelled out, and a
+/// recursive `Deserialize` trips over the variant each child is wrapped in.
+#[derive(Debug, serde::Deserialize)]
+struct RawNode {
+    id: i32,
+    properties: HashMap<String, OwnedValue>,
+    children: Vec<OwnedValue>,
+}
+
+// Borrow the signature of an equivalent non-recursive shape (`(ia{sv}av)`),
+// since the derived version would recurse forever on `children`.
+impl zbus::zvariant::Type for RawNode {
+    const SIGNATURE: &'static zbus::zvariant::Signature =
+        <(i32, HashMap<String, OwnedValue>, Vec<OwnedValue>) as zbus::zvariant::Type>::SIGNATURE;
+}
+
+/// The subset of `com.canonical.dbusmenu` we drive.
+#[zbus::proxy(
+    interface = "com.canonical.dbusmenu",
+    gen_async = false,
+    gen_blocking = true,
+    assume_defaults = true
+)]
+trait DBusMenu {
+    /// Read the whole menu tree in one call (`recursion_depth = -1`).
+    fn get_layout(
+        &self,
+        parent_id: i32,
+        recursion_depth: i32,
+        property_names: &[String],
+    ) -> zbus::Result<(u32, RawNode)>;
+
+    /// Let the item populate lazy properties before we read the layout.
+    fn about_to_show(&self, id: i32) -> zbus::Result<bool>;
+
+    /// Deliver an interaction (a `"clicked"`, `"opened"`, ... event).
+    fn event(&self, id: i32, event_id: &str, data: OwnedValue, timestamp: u32) -> zbus::Result<()>;
+}
+
+/// Own the watcher name, then serve mouse commands and refresh the snapshot.
+fn run(
+    shared: Arc<Mutex<Vec<TrayItem>>>,
+    menus: Arc<Mutex<Option<TrayMenu>>>,
+    commands: Receiver<Command>,
+) -> zbus::Result<()> {
     let registrations = Arc::new(Mutex::new(Vec::new()));
     let watcher = Watcher {
         items: registrations.clone(),
@@ -245,37 +441,276 @@ fn run(shared: Arc<Mutex<Vec<TrayItem>>>) -> zbus::Result<()> {
     let mut cache = IconCache::default();
 
     loop {
-        std::thread::sleep(POLL);
-
-        let registered: Vec<Registration> = registrations
-            .lock()
-            .expect("tray registrations poisoned")
-            .clone();
-
-        let mut alive = Vec::with_capacity(registered.len());
-        let mut snapshot = Vec::with_capacity(registered.len());
-
-        for registration in &registered {
-            let Ok(bus) = BusName::try_from(registration.bus.as_str()) else {
-                continue;
-            };
-            if !matches!(dbus.name_has_owner(bus), Ok(true)) {
-                continue;
-            }
-
-            alive.push(registration.clone());
-            if let Some(item) = read_item(&connection, registration, &mut cache) {
-                snapshot.push(item);
-            }
+        match commands.recv_timeout(POLL) {
+            Ok(command) => handle_command(&connection, &registrations, &menus, command),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return Ok(()),
         }
 
-        registrations
-            .lock()
-            .expect("tray registrations poisoned")
-            .retain(|registration| alive.iter().any(|a| a.ident == registration.ident));
-
-        *shared.lock().expect("tray snapshot poisoned") = snapshot;
+        refresh(&connection, &dbus, &registrations, &shared, &mut cache);
     }
+}
+
+/// Re-read every registered item into the shared snapshot.
+fn refresh(
+    connection: &Connection,
+    dbus: &zbus::blocking::fdo::DBusProxy<'_>,
+    registrations: &Arc<Mutex<Vec<Registration>>>,
+    shared: &Arc<Mutex<Vec<TrayItem>>>,
+    cache: &mut IconCache,
+) {
+    let registered: Vec<Registration> = registrations
+        .lock()
+        .expect("tray registrations poisoned")
+        .clone();
+
+    let mut alive = Vec::with_capacity(registered.len());
+    let mut snapshot = Vec::with_capacity(registered.len());
+
+    for registration in &registered {
+        let Ok(bus) = BusName::try_from(registration.bus.as_str()) else {
+            continue;
+        };
+        if !matches!(dbus.name_has_owner(bus), Ok(true)) {
+            continue;
+        }
+
+        alive.push(registration.clone());
+        if let Some(item) = read_item(connection, registration, cache) {
+            snapshot.push(item);
+        }
+    }
+
+    registrations
+        .lock()
+        .expect("tray registrations poisoned")
+        .retain(|registration| alive.iter().any(|a| a.ident == registration.ident));
+
+    *shared.lock().expect("tray snapshot poisoned") = snapshot;
+}
+
+/// Relay a UI mouse action to the target item.
+fn handle_command(
+    connection: &Connection,
+    registrations: &Arc<Mutex<Vec<Registration>>>,
+    menus: &Arc<Mutex<Option<TrayMenu>>>,
+    command: Command,
+) {
+    let registration = registrations
+        .lock()
+        .expect("tray registrations poisoned")
+        .iter()
+        .find(|registration| registration.ident == command.key())
+        .cloned();
+
+    let Some(registration) = registration else {
+        return;
+    };
+    let Some(proxy) = item_proxy(connection, &registration) else {
+        return;
+    };
+
+    match command {
+        Command::Activate { x, y, .. } => {
+            let _ = proxy.activate(x, y);
+        }
+        Command::SecondaryActivate { x, y, .. } => {
+            let _ = proxy.secondary_activate(x, y);
+        }
+        Command::ContextMenu { x, y, .. } => match menu_path(connection, &registration) {
+            // Prefer rendering the item's own DBusMenu; only fall back to
+            // asking the item to show a menu when it publishes none.
+            Some(path) => match read_menu(connection, &registration, path.as_str()) {
+                Some(menu) => {
+                    *menus.lock().expect("tray menu poisoned") = Some(menu);
+                }
+                None => {
+                    let _ = proxy.context_menu(x, y);
+                }
+            },
+            None => {
+                let _ = proxy.context_menu(x, y);
+            }
+        },
+        Command::MenuEvent { id, .. } => {
+            if let Some(path) = menu_path(connection, &registration)
+                && let Some(menu) = menu_proxy(connection, &registration, path.as_str())
+            {
+                let _ = menu.event(id, "clicked", empty_variant(), 0);
+            }
+        }
+    }
+}
+
+/// The object path of an item's DBusMenu, from the SNI `Menu` property.
+///
+/// A missing or root path means the item publishes no menu.
+fn menu_path(connection: &Connection, registration: &Registration) -> Option<OwnedObjectPath> {
+    let item = item_proxy(connection, registration)?;
+    let path = item.menu().ok()?;
+    let text = path.as_str();
+    if text.is_empty() || text == "/" {
+        return None;
+    }
+
+    Some(path)
+}
+
+/// Build a proxy for an item's DBusMenu at a known object path.
+fn menu_proxy<'a>(
+    connection: &Connection,
+    registration: &'a Registration,
+    path: &'a str,
+) -> Option<DBusMenuProxy<'a>> {
+    DBusMenuProxy::builder(connection)
+        .destination(registration.bus.as_str())
+        .ok()?
+        .path(path)
+        .ok()?
+        .build()
+        .ok()
+}
+
+/// Snapshot an item's context menu into a flattened [`TrayMenu`].
+fn read_menu(connection: &Connection, registration: &Registration, path: &str) -> Option<TrayMenu> {
+    let menu = menu_proxy(connection, registration, path)?;
+
+    // Give lazy items a chance to fill in their labels before we read them.
+    let _ = menu.about_to_show(0);
+
+    let (revision, root) = menu.get_layout(0, -1, &[]).ok()?;
+    Some(parse_menu(registration.ident.clone(), revision, root))
+}
+
+/// The variant DBusMenu events carry as `data`. Nothing we send needs it, so
+/// an empty string is the smallest valid variant.
+fn empty_variant() -> OwnedValue {
+    OwnedValue::try_from(Value::from("")).expect("an owned string variant")
+}
+
+/// Flatten a DBusMenu tree into displayable rows.
+fn parse_menu(key: String, revision: u32, root: RawNode) -> TrayMenu {
+    let mut entries = Vec::new();
+    for child in &root.children {
+        if let Some(node) = parse_node(child) {
+            walk(node, 0, &mut entries);
+        }
+    }
+
+    TrayMenu {
+        key,
+        revision,
+        entries,
+    }
+}
+
+/// Decode one variant-wrapped `(ia{sv}av)` into a [`RawNode`].
+fn parse_node(value: &OwnedValue) -> Option<RawNode> {
+    let structure = Structure::try_from(value.try_clone().ok()?).ok()?;
+    let mut fields = structure.fields().iter();
+
+    let id = i32::try_from(OwnedValue::try_from(fields.next()?).ok()?).ok()?;
+    let properties =
+        HashMap::try_from(OwnedValue::try_from(fields.next()?).ok()?).ok()?;
+    let children = Vec::<OwnedValue>::try_from(OwnedValue::try_from(fields.next()?).ok()?).ok()?;
+
+    Some(RawNode {
+        id,
+        properties,
+        children,
+    })
+}
+
+/// Append one node and its descendants to the flattened menu.
+fn walk(node: RawNode, depth: u8, out: &mut Vec<MenuEntry>) {
+    if !prop_bool(&node.properties, "visible", true) {
+        return;
+    }
+
+    if prop_string(&node.properties, "type").as_deref() == Some("separator") {
+        out.push(MenuEntry::Separator);
+        return;
+    }
+
+    let label = prop_string(&node.properties, "label")
+        .map(|label| clean_label(&label))
+        .unwrap_or_default();
+    let toggle = match prop_string(&node.properties, "toggle-type").as_deref() {
+        Some("checkmark") => Toggle::Checkbox,
+        Some("radio") => Toggle::Radio,
+        _ => Toggle::None,
+    };
+
+    out.push(MenuEntry::Item(MenuItem {
+        id: node.id,
+        label,
+        enabled: prop_bool(&node.properties, "enabled", true),
+        toggle,
+        checked: prop_i32(&node.properties, "toggle-state") == Some(1),
+        depth,
+        has_submenu: prop_string(&node.properties, "children-display").as_deref()
+            == Some("submenu"),
+    }));
+
+    for child in &node.children {
+        if let Some(child) = parse_node(child) {
+            walk(child, depth.saturating_add(1), out);
+        }
+    }
+}
+
+/// Read a boolean DBusMenu property, defaulting when absent or mistyped.
+fn prop_bool(properties: &HashMap<String, OwnedValue>, key: &str, default: bool) -> bool {
+    properties
+        .get(key)
+        .and_then(|value| bool::try_from(value).ok())
+        .unwrap_or(default)
+}
+
+/// Read an integer DBusMenu property.
+fn prop_i32(properties: &HashMap<String, OwnedValue>, key: &str) -> Option<i32> {
+    properties
+        .get(key)
+        .and_then(|value| i32::try_from(value).ok())
+}
+
+/// Read a string DBusMenu property.
+fn prop_string(properties: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
+    let value = properties.get(key)?;
+    let text: &str = value.try_into().ok()?;
+    Some(text.to_string())
+}
+
+/// Strip DBusMenu label markup: `\_` becomes a literal underscore, a lone `_`
+/// marks a mnemonic and is dropped.
+fn clean_label(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' if chars.peek() == Some(&'_') => {
+                out.push('_');
+                chars.next();
+            }
+            '_' => {}
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Build a proxy for an item at its registered bus name and path.
+fn item_proxy<'a>(
+    connection: &Connection,
+    registration: &'a Registration,
+) -> Option<StatusNotifierItemProxy<'a>> {
+    StatusNotifierItemProxy::builder(connection)
+        .destination(registration.bus.as_str())
+        .ok()?
+        .path(registration.path.as_str())
+        .ok()?
+        .build()
+        .ok()
 }
 
 /// Read one item's display properties into a snapshot entry.
@@ -284,13 +719,7 @@ fn read_item(
     registration: &Registration,
     cache: &mut IconCache,
 ) -> Option<TrayItem> {
-    let proxy = StatusNotifierItemProxy::builder(connection)
-        .destination(registration.bus.as_str())
-        .ok()?
-        .path(registration.path.as_str())
-        .ok()?
-        .build()
-        .ok()?;
+    let proxy = item_proxy(connection, registration)?;
 
     let id = proxy
         .id()
@@ -305,9 +734,11 @@ fn read_item(
     };
 
     Some(TrayItem {
+        key: registration.ident.clone(),
         id,
         title,
         status,
+        is_menu: proxy.item_is_menu().unwrap_or(false),
         icon: icon_for(&proxy, cache),
     })
 }
@@ -606,5 +1037,145 @@ mod tests {
                 > size_rank(Path::new("/icons/16x16/apps/a.png"))
         );
         assert_eq!(size_rank(Path::new("/icons/scalable/a.svg")), 0);
+    }
+
+    fn string_prop(value: &str) -> OwnedValue {
+        OwnedValue::try_from(Value::from(value.to_string())).unwrap()
+    }
+
+    fn props(pairs: &[(&str, OwnedValue)]) -> HashMap<String, OwnedValue> {
+        pairs
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.clone()))
+            .collect()
+    }
+
+    /// A wire-shaped menu node: a `(ia{sv}av)` structure, children pre-wrapped.
+    fn owned_node(id: i32, pairs: &[(&str, OwnedValue)], children: Vec<OwnedValue>) -> OwnedValue {
+        OwnedValue::try_from(Value::from((id, props(pairs), children))).unwrap()
+    }
+
+    /// A layout root whose only role is to hold the top-level items.
+    fn root(children: Vec<OwnedValue>) -> RawNode {
+        RawNode {
+            id: 0,
+            properties: HashMap::new(),
+            children,
+        }
+    }
+
+    #[test]
+    fn strips_mnemonics_from_labels() {
+        assert_eq!(clean_label("_File"), "File");
+        assert_eq!(clean_label("Save \\_As"), "Save _As");
+        assert_eq!(clean_label("plain"), "plain");
+    }
+
+    #[test]
+    fn flattens_a_menu_tree_with_depth() {
+        let menu = parse_menu(
+            "item".into(),
+            3,
+            root(vec![
+                owned_node(
+                    1,
+                    &[("label", string_prop("File"))],
+                    vec![owned_node(2, &[("label", string_prop("New"))], vec![])],
+                ),
+                owned_node(3, &[("type", string_prop("separator"))], vec![]),
+                owned_node(
+                    4,
+                    &[
+                        ("label", string_prop("Show")),
+                        ("toggle-type", string_prop("checkmark")),
+                        ("toggle-state", OwnedValue::from(1i32)),
+                    ],
+                    vec![],
+                ),
+            ]),
+        );
+
+        assert_eq!(menu.revision, 3);
+        assert_eq!(menu.entries.len(), 4);
+        let MenuEntry::Item(file) = &menu.entries[0] else {
+            panic!("expected item");
+        };
+        assert_eq!(file.label, "File");
+        assert_eq!(file.depth, 0);
+        let MenuEntry::Item(new) = &menu.entries[1] else {
+            panic!("expected item");
+        };
+        assert_eq!((new.label.as_str(), new.depth), ("New", 1));
+        assert_eq!(menu.entries[2], MenuEntry::Separator);
+        let MenuEntry::Item(show) = &menu.entries[3] else {
+            panic!("expected item");
+        };
+        assert_eq!(show.toggle, Toggle::Checkbox);
+        assert!(show.checked);
+    }
+
+    #[test]
+    fn skips_invisible_items_and_their_children() {
+        let menu = parse_menu(
+            "item".into(),
+            0,
+            root(vec![owned_node(
+                1,
+                &[("visible", OwnedValue::from(false))],
+                vec![owned_node(2, &[("label", string_prop("Hidden"))], vec![])],
+            )]),
+        );
+
+        assert!(menu.entries.is_empty());
+    }
+
+    #[test]
+    fn defaults_items_to_enabled_and_untoggled() {
+        let menu = parse_menu(
+            "item".into(),
+            0,
+            root(vec![owned_node(
+                1,
+                &[("label", string_prop("Run"))],
+                vec![],
+            )]),
+        );
+
+        let MenuEntry::Item(item) = &menu.entries[0] else {
+            panic!("expected item");
+        };
+        assert!(item.enabled);
+        assert_eq!(item.toggle, Toggle::None);
+        assert!(!item.checked);
+    }
+
+    #[test]
+    fn decodes_a_wire_layout_reply() {
+        use zbus::zvariant::serialized::Context;
+        use zbus::zvariant::{LE, to_bytes_for_signature};
+
+        let reply = (
+            7u32,
+            (
+                0i32,
+                HashMap::<String, OwnedValue>::new(),
+                vec![Value::from((
+                    1i32,
+                    props(&[("label", string_prop("Open"))]),
+                    Vec::<Value<'static>>::new(),
+                ))],
+            ),
+        );
+
+        let ctx = Context::new_dbus(LE, 0);
+        let bytes = to_bytes_for_signature(ctx, "u(ia{sv}av)", &reply).unwrap();
+        let ((revision, root), _): ((u32, RawNode), _) = bytes.deserialize().unwrap();
+
+        let menu = parse_menu("item".into(), revision, root);
+        assert_eq!(menu.revision, 7);
+        let MenuEntry::Item(item) = &menu.entries[0] else {
+            panic!("expected item");
+        };
+        assert_eq!(item.label, "Open");
     }
 }

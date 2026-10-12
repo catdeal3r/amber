@@ -38,8 +38,9 @@ Semantic tokens (see `crates/shell-common/src/theme.rs`):
 | `green`       | status green                           | `#89ab8a` |
 | `yellow`      | attention                              | `#c4c19e` |
 
-- **Radius:** `10` for cards/overlays, `6` for tight chips. The launcher opts
-  out of rounding entirely: its card, search pill and rows are square-cornered.
+- **Radius:** `10` for cards/overlays, `6` for tight chips. The launcher and the
+  tray context menu opt out of rounding entirely: their cards (and the launcher's
+  search pill and rows) are square-cornered.
 - **Fonts:** `monospace` for text, `Material Symbols Sharp` for icons.
   Both are resolved from the system font stack and overridable.
   CommitMono Regular is bundled (`shell-common/assets/`, OFL-1.1) and registered
@@ -50,7 +51,10 @@ Semantic tokens (see `crates/shell-common/src/theme.rs`):
 ## The bar (`amber-panel`)
 
 A single surface anchored to the **top** edge, full width, `42px` tall, with a
-`42px` exclusive zone. Background `bg`, no rounding.
+`42px` exclusive zone. Background `bg`, no rounding. The panel runs as an
+iced_layershell **daemon** (multi-window) rather than a single `application`, so
+it can create extra layer surfaces — currently the tray context-menu overlay
+(see [System tray](#system-tray)).
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
@@ -111,20 +115,39 @@ snapshot is refreshed once per second from each item's `Id`, `Title`, `Status`,
 - The watcher runs on its own thread with zbus's blocking API, so the UI never
   waits on the bus. Items whose bus name disappears are pruned from the
   snapshot and from `RegisteredStatusNotifierItems`.
-- Rendering only: clicking a tray item does nothing yet (context menus and
-  activate are a follow-up).
+- Clicks are handled: left click calls `Activate`, middle click
+  `SecondaryActivate`, and right click `ContextMenu` (a menu-only item, where
+  `ItemIsMenu` is set, opens its menu on left click instead). Requests cross to
+  the watcher thread over a channel so the UI never blocks on the bus.
+- When an item publishes a `com.canonical.dbusmenu` menu, a `ContextMenu` request
+  snapshots it on the watcher thread: `AboutToShow` (to let lazy items fill
+  themselves in) then `GetLayout`, flattened depth-first with submenu children
+  inlined and mnemonics stripped. The UI picks the snapshot up on its next poll
+  and draws it; items without a DBusMenu fall back to calling the item's own
+  `ContextMenu`.
+
+The menu is drawn on its own full-output `Layer::Overlay` surface, created on
+demand and removed when it closes. The surface is keyboard-exclusive and
+captures the pointer, so a click anywhere outside the card (or `Escape`)
+dismisses it. The card has square corners and a 1px `muted` border, and is
+placed just below the bar with its right edge under the tray icon that was
+clicked: the bar tracks the pointer's last x and hands it to the menu as an
+anchor. (A layer surface's origin already sits below the bar's exclusive zone,
+so only a small gap is added on top.) Over-long item labels are shortened with
+an ellipsis, because iced has no built-in text ellipsis. Menus are frozen once
+shown, so row clicks are sent back to the item as DBusMenu `Event(id,
+"clicked")` without re-reading the layout.
 
 The watcher is verified by
 `crates/shell-common/tests/tray_host.rs`, which starts a private `dbus-daemon`,
 publishes a fake item, and asserts it appears in the snapshot with its icon
-decoded.
+decoded, receives a routed `Activate`, and exposes a DBusMenu whose flattened
+rows and `clicked` events round-trip.
 
 ### Not yet in the bar
 
 - Battery via `upower` over D-Bus (currently sysfs).
 - Wi-Fi/Bluetooth via D-Bus (currently `nmcli`/`bluetoothctl`).
-- Tray item interaction: `Activate`/`SecondaryActivate` and `com.canonical.dbusmenu`
-  context menus.
 - Scroll-wheel to cycle workspaces.
 
 ## The wallpaper (`amber-wallpaper`)
