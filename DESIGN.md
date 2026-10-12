@@ -119,9 +119,10 @@ otherwise it follows the active one.
 
 ## The launcher (`amber-launcher`)
 
-A one-shot, keyboard-exclusive overlay. It grabs the keyboard the moment it
-maps so you can start typing immediately, and exits as soon as you launch an
-app, press Escape, or click outside the card.
+A one-shot, keyboard-exclusive overlay. It slides down and fades in as it maps
+and grabs the keyboard, so you can start typing immediately; launching an app,
+pressing Escape, or clicking outside plays the reverse animation before it
+exits.
 
 ```
 ┌───────────────────────────────────────────────┐
@@ -153,6 +154,15 @@ app, press Escape, or click outside the card.
   launches, `Escape` closes. Up to eight rows fit at once (`MAX_ROWS`) and the
   window scrolls to keep the selection visible; an empty result set shows a
   centred `No matches`.
+- **Open/close animation:** on open the card slides down from the top edge to
+  its resting spot while fading in over `200ms` (`EaseOutCubic`); launching,
+  pressing Escape, or clicking outside plays the reverse before the launcher
+  actually exits. A launch only spawns once the close animation settles (the
+  pending action rides on the final frame). The fade is per-element alpha
+  (`Color::scale_alpha`) because the layer surface itself is transparent, and
+  the slide comes from two `FillPortion` spacers around the card — `≈0:1` at the
+  top edge when hidden, `1:1` (centred) when open. Frames come from a `16ms`
+  tick subscription that only runs while something is animating.
 - **Focus & dismissal:** the search field is focused once as soon as the surface
   maps (a `Subscription::run` stream that fires a single `Focus` message). A
   full-output click-catcher sits under the card, so a click anywhere outside

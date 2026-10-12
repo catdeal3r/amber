@@ -7,6 +7,7 @@
 mod apps;
 mod exec;
 
+use iced::animation::Easing;
 use iced::widget::{
     Id, Space, Stack, button, column, container, mouse_area, row, text, text_input,
 };
@@ -16,11 +17,17 @@ use iced_layershell::settings::{LayerShellSettings, StartMode};
 use iced_layershell::{application, to_layer_message};
 use shell_common::theme::Theme;
 use shell_common::{assets, config};
+use std::time::{Duration, Instant};
 
 /// How many result rows fit on screen at once.
 const MAX_ROWS: usize = 8;
 const ROW_HEIGHT: f32 = 38.0;
 const SEARCH_HEIGHT: f32 = 40.0;
+
+/// How long the open/close slide-and-fade takes.
+const SLIDE_DURATION: Duration = Duration::from_millis(200);
+/// The animation frame interval while the launcher is animating.
+const FRAME: Duration = Duration::from_millis(16);
 
 #[to_layer_message]
 #[derive(Debug, Clone)]
@@ -41,6 +48,16 @@ enum Message {
     Dismiss,
     /// Absorb a click on the card's own background.
     Noop,
+    /// Advance the open/close animation to this instant.
+    Tick(Instant),
+}
+
+/// The action to run once the launcher finishes its close animation.
+enum Close {
+    /// Close without launching anything.
+    Dismiss,
+    /// Launch the app at this index into `apps`.
+    Launch(usize),
 }
 
 struct Launcher {
@@ -52,6 +69,12 @@ struct Launcher {
     /// Indices into `apps`, best match first.
     results: Vec<usize>,
     input_id: Id,
+    /// `false` = hidden, `true` = shown; drives the slide-and-fade.
+    progress: iced::Animation<bool>,
+    /// The instant of the most recent frame, used to project `progress`.
+    now: Instant,
+    /// Set while closing, carried out once the animation settles.
+    closing: Option<Close>,
 }
 
 impl Launcher {
@@ -65,6 +88,21 @@ impl Launcher {
             selected: 0,
             results,
             input_id: Id::unique(),
+            progress: iced::Animation::new(false)
+                .duration(SLIDE_DURATION)
+                .easing(Easing::EaseOutCubic),
+            now: Instant::now(),
+            closing: None,
+        }
+    }
+
+    /// Starts closing, once. The reverse animation plays first; the action is
+    /// carried out by the final `Tick`, after the animation settles.
+    fn begin_close(&mut self, close: Close) {
+        if self.closing.is_none() {
+            self.now = Instant::now();
+            self.closing = Some(close);
+            self.progress.go_mut(false, self.now);
         }
     }
 
@@ -81,12 +119,6 @@ impl Launcher {
         }
         let current = self.selected.min(len - 1) as i32;
         self.selected = (current + delta).rem_euclid(len as i32) as usize;
-    }
-
-    fn launch_selected(&self) {
-        if let Some(&index) = self.results.get(self.selected) {
-            spawn(&self.apps[index]);
-        }
     }
 
     /// The half-open range of `results` currently on screen, scrolled so the
@@ -107,7 +139,11 @@ impl Launcher {
 
 fn update(state: &mut Launcher, message: Message) -> Task<Message> {
     match message {
-        Message::Focus => iced::widget::operation::focus(state.input_id.clone()),
+        Message::Focus => {
+            state.now = Instant::now();
+            state.progress.go_mut(true, state.now);
+            iced::widget::operation::focus(state.input_id.clone())
+        }
         Message::QueryChanged(query) => {
             state.query = query;
             state.recompute();
@@ -122,25 +158,58 @@ fn update(state: &mut Launcher, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::Launch => {
-            state.launch_selected();
-            iced::exit()
+            let close = match state.results.get(state.selected) {
+                Some(&app_index) => Close::Launch(app_index),
+                None => Close::Dismiss,
+            };
+            state.begin_close(close);
+            Task::none()
         }
         Message::LaunchIndex(index) => {
             state.selected = index;
-            state.launch_selected();
-            iced::exit()
+            if let Some(&app_index) = state.results.get(index) {
+                state.begin_close(Close::Launch(app_index));
+            }
+            Task::none()
         }
-        Message::Dismiss => iced::exit(),
+        Message::Dismiss => {
+            state.begin_close(Close::Dismiss);
+            Task::none()
+        }
         Message::Noop => Task::none(),
+        Message::Tick(now) => {
+            state.now = now;
+            if state.progress.is_animating(now) {
+                return Task::none();
+            }
+            match state.closing.take() {
+                Some(Close::Launch(app_index)) => {
+                    spawn(&state.apps[app_index]);
+                    iced::exit()
+                }
+                Some(Close::Dismiss) => iced::exit(),
+                None => Task::none(),
+            }
+        }
         // Layer-shell actions injected by `#[to_layer_message]`.
         _ => Task::none(),
     }
 }
 
-fn subscription(_state: &Launcher) -> Subscription<Message> {
+fn subscription(state: &Launcher) -> Subscription<Message> {
+    // Only drive frames while there is something to animate, including the
+    // final tick that carries out a pending close.
+    let animating = state.closing.is_some() || state.progress.is_animating(state.now);
+    let tick = if animating {
+        iced::time::every(FRAME).map(Message::Tick)
+    } else {
+        Subscription::none()
+    };
+
     Subscription::batch([
         iced::event::listen_with(on_key),
         Subscription::run(focus_once),
+        tick,
     ])
 }
 
@@ -185,6 +254,10 @@ fn view(state: &Launcher) -> Element<'_, Message> {
     let fonts = state.theme.fonts;
     let metrics = state.theme.metrics;
 
+    // `0.0` when hidden, `1.0` when fully open. Drives both the fade and the
+    // slide, so everything fades and moves together.
+    let t: f32 = state.progress.interpolate(0.0, 1.0, state.now);
+
     let search = text_input("Search applications", &state.query)
         .id(state.input_id.clone())
         .on_input(Message::QueryChanged)
@@ -195,10 +268,10 @@ fn view(state: &Launcher) -> Element<'_, Message> {
         .style(move |_theme: &iced::Theme, _status| text_input::Style {
             background: Color::TRANSPARENT.into(),
             border: Border::default(),
-            icon: palette.muted,
-            placeholder: palette.muted,
-            value: palette.text,
-            selection: palette.accent_fill,
+            icon: palette.muted.scale_alpha(t),
+            placeholder: palette.muted.scale_alpha(t),
+            value: palette.text.scale_alpha(t),
+            selection: palette.accent_fill.scale_alpha(t),
         });
 
     let pill = container(
@@ -206,7 +279,7 @@ fn view(state: &Launcher) -> Element<'_, Message> {
             text(glyph_char(0xe8b6))
                 .font(fonts.icon)
                 .size(18.0)
-                .color(palette.muted),
+                .color(palette.muted.scale_alpha(t)),
             search,
         ]
         .spacing(8.0)
@@ -217,7 +290,7 @@ fn view(state: &Launcher) -> Element<'_, Message> {
     .padding([0.0, 12.0])
     .align_y(Alignment::Center)
     .style(move |_theme: &iced::Theme| container::Style {
-        background: Some(palette.field.into()),
+        background: Some(palette.field.scale_alpha(t).into()),
         border: Border::default(),
         ..container::Style::default()
     });
@@ -225,7 +298,7 @@ fn view(state: &Launcher) -> Element<'_, Message> {
     let window = state.window();
     let rows: Vec<Element<'_, Message>> = window
         .clone()
-        .map(|index| result_row(state, index, index == state.selected))
+        .map(|index| result_row(state, index, index == state.selected, t))
         .collect();
 
     let body: Element<'_, Message> = if rows.is_empty() {
@@ -233,7 +306,7 @@ fn view(state: &Launcher) -> Element<'_, Message> {
             text("No matches")
                 .size(13.0)
                 .font(fonts.text)
-                .color(palette.muted),
+                .color(palette.muted.scale_alpha(t)),
         )
         .width(Length::Fill)
         .height(Length::Fixed(ROW_HEIGHT + 8.0))
@@ -248,46 +321,63 @@ fn view(state: &Launcher) -> Element<'_, Message> {
         .width(Length::Fixed(metrics.overlay_width))
         .padding(10.0)
         .style(move |_theme: &iced::Theme| container::Style {
-            background: Some(palette.bg.into()),
+            background: Some(palette.bg.scale_alpha(t).into()),
             border: Border::default(),
             ..container::Style::default()
         });
 
     // A click catcher fills the output so anywhere outside the card dismisses;
     // the card itself absorbs its own clicks with a no-op.
-    Stack::new()
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .push(
-            mouse_area(container(
-                Space::new().width(Length::Fill).height(Length::Fill),
-            ))
-            .on_press(Message::Dismiss),
-        )
-        .push(
-            container(mouse_area(card).on_press(Message::Noop))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .align_x(Alignment::Center)
-                .align_y(Alignment::Center),
-        )
-        .into()
+    let mut overlays = Stack::new().width(Length::Fill).height(Length::Fill).push(
+        mouse_area(container(
+            Space::new().width(Length::Fill).height(Length::Fill),
+        ))
+        .on_press(Message::Dismiss),
+    );
+
+    if t > 0.0 {
+        // Slide down from the top edge: with an empty top spacer the card hugs
+        // the top at `t = 0`, and by `t = 1` the spacers are equal and it rests
+        // centred. Only the card is wrapped in a `mouse_area`, so clicks in the
+        // empty spacers fall through to the dismiss catcher below.
+        let top = 1 + (t * 1000.0) as u16;
+        let bottom = 1001;
+
+        overlays = overlays.push(
+            column![
+                Space::new().height(Length::FillPortion(top)),
+                mouse_area(card).on_press(Message::Noop),
+                Space::new().height(Length::FillPortion(bottom)),
+            ]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Alignment::Center),
+        );
+    }
+
+    overlays.into()
 }
 
 /// One result row: the app name, with its generic name underneath when known.
-fn result_row<'a>(state: &'a Launcher, index: usize, selected: bool) -> Element<'a, Message> {
+fn result_row<'a>(
+    state: &'a Launcher,
+    index: usize,
+    selected: bool,
+    t: f32,
+) -> Element<'a, Message> {
     let palette = state.theme.palette;
     let fonts = state.theme.fonts;
     let app = &state.apps[state.results[index]];
 
-    // Unselected rows sit back in grey; the selected row goes white, name and
-    // generic name together. The generic name is drawn at lower opacity so the
-    // title stays the focal point.
+    // Unselected rows sit back in grey; the selected row goes white. The generic
+    // name is drawn at lower opacity so the title stays the focal point. Both are
+    // faded by the open/close animation.
     let color = if selected {
         palette.text
     } else {
         palette.muted
-    };
+    }
+    .scale_alpha(t);
     let subtext_color = color.scale_alpha(0.6);
 
     let mut labels = column![
@@ -328,7 +418,7 @@ fn result_row<'a>(state: &'a Launcher, index: usize, selected: bool) -> Element<
             }
         };
         button::Style {
-            background: Some(background.into()),
+            background: Some(background.scale_alpha(t).into()),
             text_color: color,
             border: Border::default(),
             ..button::Style::default()
