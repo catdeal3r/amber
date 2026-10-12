@@ -1,5 +1,4 @@
 # TODOs in order of importance
-- [ ] Hover of time, battery, and wifi/bluetooth reveal extra information
 - [ ] Lockscreen and swayidle integration
   - [ ] Time
   - [ ] Media Player

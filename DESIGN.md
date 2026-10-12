@@ -53,8 +53,9 @@ Semantic tokens (see `crates/shell-common/src/theme.rs`):
 A single surface anchored to the **top** edge, full width, `42px` tall, with a
 `42px` exclusive zone. Background `bg`, no rounding. The panel runs as an
 iced_layershell **daemon** (multi-window) rather than a single `application`, so
-it can create extra layer surfaces — currently the tray context-menu overlay
-(see [System tray](#system-tray)).
+it can create extra layer surfaces — the tray context-menu overlay (see
+[System tray](#system-tray)) and the always-mapped tooltip overlay (see
+[Hover tooltips](#hover-tooltips)).
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
@@ -93,10 +94,33 @@ it can create extra layer surfaces — currently the tray context-menu overlay
 Data comes from `niri msg --json workspaces`, polled every `400ms` (occupancy is
 cross-referenced from `niri msg --json windows`, since workspace objects no
 longer carry their window list); the clock ticks once per second and the
-battery, Wi-Fi and Bluetooth every `5s`. The Wi-Fi query passes `--rescan no` so
-polling never triggers a scan. All are subscriptions in
+battery, Wi-Fi, Bluetooth and power profile every `5s`. The Wi-Fi query passes
+`--rescan no` so polling never triggers a scan. All are subscriptions in
 `crates/panel/src/main.rs`. The left/right clusters sit on a base row while the
 pager is stacked on top and centered on the bar's full width.
+
+### Hover tooltips
+
+Hovering the clock, battery, Wi-Fi or Bluetooth indicator reveals extra detail in
+a small `bg` card with square corners below the bar, its right edge anchored to
+the pointer:
+
+- **Clock:** the full date (`%A, %-d %B %Y`).
+- **Battery:** percentage and status, then health (full-charge vs design
+  capacity), cycle count, and the active `power-profiles-daemon` profile
+  (`shell-common::battery::power_profile`).
+- **Wi-Fi:** the connected SSID and signal percentage (or `Wi-Fi off` / `Not
+  connected`).
+- **Bluetooth:** the names of connected devices (or `Bluetooth off` / `No
+  connected devices`).
+
+The card is drawn on a single **always-mapped** `Layer::Overlay` surface created
+at startup. It is fully **input-transparent** (`events_transparent` sets an empty
+input region) and never takes keyboard focus, so the bar beneath it keeps the
+pointer and hover works normally. Leaving the bar clears the card and hovering a
+different indicator swaps its content; the surface stays mapped (showing nothing
+when idle) to avoid the map/unmap churn of creating it per hover. Indicators are
+wrapped in a `mouse_area` for `on_enter`, and the bar in one for `on_exit`.
 
 ### System tray
 

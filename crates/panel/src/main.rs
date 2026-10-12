@@ -16,7 +16,7 @@ use iced_layershell::reexport::{
 };
 use iced_layershell::settings::{LayerShellSettings, StartMode};
 use iced_layershell::{daemon, to_layer_message};
-use shell_common::battery::{Battery, Status};
+use shell_common::battery::{self, Battery, Status};
 use shell_common::bluetooth::{self, Bluetooth};
 use shell_common::theme::{Metrics, Theme};
 use shell_common::tray::{self, Tray, TrayItem};
@@ -56,8 +56,27 @@ enum Message {
     WindowClosed(iced::window::Id),
     /// The pointer moved within a window (its local x), used to anchor menus.
     PointerMoved(f32),
+    /// The pointer entered an indicator; show its tooltip.
+    HoverEnter(HoverKind),
+    /// The pointer left the bar; hide the tooltip.
+    HoverExit,
     /// Absorb a click inside the menu card.
     Noop,
+}
+
+/// The indicator a tooltip is currently shown for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HoverKind {
+    Clock,
+    Battery,
+    Wifi,
+    Bluetooth,
+}
+
+/// The indicator currently hovered, and the screen x the tooltip is anchored to.
+struct Hover {
+    kind: HoverKind,
+    anchor_x: f32,
 }
 
 /// The context menu currently shown, on its own overlay layer surface.
@@ -93,6 +112,12 @@ struct Panel {
     /// The pointer's last known x within the bar, used to anchor a menu under
     /// the icon that was clicked.
     pointer_x: f32,
+    /// The active system power profile, shown in the battery tooltip.
+    power_profile: Option<String>,
+    /// The indicator currently hovered, if any.
+    hover: Option<Hover>,
+    /// The always-mapped, input-transparent overlay that draws tooltips.
+    tooltip_window: iced::window::Id,
     logo: image::Handle,
     config_error: Option<String>,
 }
@@ -117,6 +142,9 @@ impl Panel {
             menu_pending: None,
             menu: None,
             pointer_x: 0.0,
+            power_profile: battery::power_profile(),
+            hover: None,
+            tooltip_window: iced::window::Id::unique(),
             logo,
             config_error: config::startup_error(),
         }
@@ -139,6 +167,7 @@ fn update(state: &mut Panel, message: Message) -> Task<Message> {
             state.battery = Battery::read();
             state.wifi = wifi::read();
             state.bluetooth = bluetooth::read();
+            state.power_profile = battery::power_profile();
         }
         Message::PollTray => {
             let items = state.tray.items();
@@ -178,6 +207,7 @@ fn update(state: &mut Panel, message: Message) -> Task<Message> {
         Message::TrayContextMenu(key) => {
             state.tray.context_menu(&key);
             state.menu_pending = Some((key, Instant::now()));
+            state.hover = None;
         }
         Message::MenuReady => return menu_ready(state),
         Message::MenuAction(id) => {
@@ -194,7 +224,20 @@ fn update(state: &mut Panel, message: Message) -> Task<Message> {
                 state.menu = None;
             }
         }
-        Message::PointerMoved(x) => state.pointer_x = x,
+        Message::PointerMoved(x) => {
+            state.pointer_x = x;
+            // Keep an open tooltip anchored to the pointer as it moves.
+            if let Some(hover) = &mut state.hover {
+                hover.anchor_x = x;
+            }
+        }
+        Message::HoverEnter(kind) => {
+            state.hover = Some(Hover {
+                kind,
+                anchor_x: state.pointer_x,
+            });
+        }
+        Message::HoverExit => state.hover = None,
         Message::Noop => {}
         Message::FocusWorkspace(idx) => niri::focus_workspace(idx),
         Message::ToggleWifi => {
@@ -216,7 +259,7 @@ fn update(state: &mut Panel, message: Message) -> Task<Message> {
                 bluetooth::set_powered(next);
                 bluetooth.powered = next;
                 if !next {
-                    bluetooth.connected = 0;
+                    bluetooth.devices.clear();
                 }
             }
         }
@@ -326,8 +369,12 @@ fn on_event(
     }
 }
 
-/// Draw the surface for `window`: the bar itself, or the context-menu overlay.
+/// Draw the surface for `window`: the bar itself, a tooltip, or the context
+/// menu overlay.
 fn view(state: &Panel, window: iced::window::Id) -> Element<'_, Message> {
+    if window == state.tooltip_window {
+        return tooltip_view(state);
+    }
     match &state.menu {
         Some(menu) if menu.window == window => menu_view(state, menu),
         _ => bar_view(state),
@@ -357,29 +404,31 @@ fn bar_view(state: &Panel) -> Element<'_, Message> {
 
     // If the config file failed to parse at startup, say so where the clock
     // would be (the full detail is printed to stderr).
-    let clock = match &state.config_error {
+    let clock: Element<'_, Message> = match &state.config_error {
         Some(_) => text("config error")
             .size(13.0)
             .font(fonts.text)
-            .color(palette.red),
+            .color(palette.red)
+            .into(),
         None => text(state.clock.clone())
             .size(13.0)
             .font(fonts.text)
-            .color(palette.text),
+            .color(palette.text)
+            .into(),
     };
 
     let mut right_items: Vec<Element<'_, Message>> = Vec::new();
     right_items.extend(tray_indicators(state));
     if state.wifi.is_some() {
-        right_items.push(wifi_indicator(state));
+        right_items.push(hoverable(HoverKind::Wifi, wifi_indicator(state)));
     }
     if state.bluetooth.is_some() {
-        right_items.push(bluetooth_indicator(state));
+        right_items.push(hoverable(HoverKind::Bluetooth, bluetooth_indicator(state)));
     }
     if state.battery.is_some() {
-        right_items.push(battery_indicator(state));
+        right_items.push(hoverable(HoverKind::Battery, battery_indicator(state)));
     }
-    right_items.push(clock.into());
+    right_items.push(hoverable(HoverKind::Clock, clock));
 
     let right = row(right_items)
         .spacing(metrics.gap + 3.0)
@@ -412,7 +461,9 @@ fn bar_view(state: &Panel) -> Element<'_, Message> {
         .push(clusters)
         .push(pager);
 
-    container(bar)
+    // Leaving the bar hides any open tooltip; the background is painted by the
+    // outer container, behind the mouse area.
+    container(mouse_area(bar).on_exit(Message::HoverExit))
         .width(Length::Fill)
         .height(Length::Fill)
         .style(move |_theme: &iced::Theme| container::Style {
@@ -420,6 +471,11 @@ fn bar_view(state: &Panel) -> Element<'_, Message> {
             ..container::Style::default()
         })
         .into()
+}
+
+/// Wrap an indicator so hovering it opens its tooltip.
+fn hoverable<'a>(kind: HoverKind, content: Element<'a, Message>) -> Element<'a, Message> {
+    mouse_area(content).on_enter(Message::HoverEnter(kind)).into()
 }
 
 /// Width of the context-menu card.
@@ -630,6 +686,147 @@ fn menu_glyph<'a>(font: iced::Font, codepoint: u32, color: Color) -> Element<'a,
         .into()
 }
 
+/// Width of the tooltip card.
+const TOOLTIP_WIDTH: f32 = 210.0;
+
+/// Settings for the always-mapped tooltip overlay: full-output, but never
+/// focused and fully input-transparent, so it only paints and the bar beneath it
+/// keeps receiving the pointer.
+fn tooltip_settings() -> NewLayerShellSettings {
+    NewLayerShellSettings {
+        size: None,
+        layer: Layer::Overlay,
+        anchor: Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right,
+        exclusive_zone: None,
+        margin: None,
+        keyboard_interactivity: KeyboardInteractivity::None,
+        output_option: OutputOption::Active,
+        events_transparent: true,
+        namespace: Some("amber-tooltip".to_string()),
+    }
+}
+
+/// The tooltip overlay: a small card under the hovered indicator, anchored by
+/// its right edge to the pointer, or nothing at all.
+fn tooltip_view(state: &Panel) -> Element<'_, Message> {
+    let palette = state.theme.palette;
+
+    let Some(hover) = &state.hover else {
+        return Space::new().width(Length::Fill).height(Length::Fill).into();
+    };
+
+    let card = container(tooltip_content(state, hover.kind))
+        .width(Length::Fixed(TOOLTIP_WIDTH))
+        .padding([8.0, 10.0])
+        .style(move |_theme: &iced::Theme| container::Style {
+            background: Some(palette.bg.into()),
+            border: Border::default().color(palette.muted).width(1.0),
+            ..container::Style::default()
+        });
+
+    container(card)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(Alignment::Start)
+        .align_y(Alignment::Start)
+        .padding(Padding {
+            top: 4.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: (hover.anchor_x - TOOLTIP_WIDTH).max(0.0),
+        })
+        .into()
+}
+
+/// The lines drawn inside a tooltip for the given indicator.
+fn tooltip_content(state: &Panel, kind: HoverKind) -> Element<'_, Message> {
+    let palette = state.theme.palette;
+    let fonts = state.theme.fonts;
+
+    let mut lines: Vec<Element<'_, Message>> = Vec::new();
+    let mut push = |color: Color, value: String| {
+        lines.push(tooltip_line(fonts.text, color, value));
+    };
+
+    match kind {
+        HoverKind::Clock => push(
+            palette.text,
+            chrono::Local::now().format("%A, %-d %B %Y").to_string(),
+        ),
+        HoverKind::Battery => {
+            if let Some(battery) = state.battery {
+                push(
+                    palette.text,
+                    format!("{}% · {}", battery.percentage, status_label(battery.status)),
+                );
+                if let Some(health) = battery.health {
+                    push(palette.muted, format!("Health {health}%"));
+                }
+                if let Some(cycles) = battery.cycles {
+                    push(palette.muted, format!("{cycles} cycles"));
+                }
+                if let Some(profile) = &state.power_profile {
+                    push(palette.muted, format!("Power: {}", profile_label(profile)));
+                }
+            }
+        }
+        HoverKind::Wifi => {
+            if let Some(wifi) = &state.wifi {
+                if !wifi.enabled {
+                    push(palette.muted, "Wi-Fi off".to_string());
+                } else if let Some(ssid) = &wifi.ssid {
+                    push(palette.text, ssid.clone());
+                    if let Some(signal) = wifi.signal {
+                        push(palette.muted, format!("Signal {signal}%"));
+                    }
+                } else {
+                    push(palette.muted, "Not connected".to_string());
+                }
+            }
+        }
+        HoverKind::Bluetooth => {
+            if let Some(bluetooth) = &state.bluetooth {
+                if !bluetooth.powered {
+                    push(palette.muted, "Bluetooth off".to_string());
+                } else if bluetooth.devices.is_empty() {
+                    push(palette.muted, "No connected devices".to_string());
+                } else {
+                    for device in &bluetooth.devices {
+                        push(palette.text, device.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    column(lines).spacing(2.0).width(Length::Fill).into()
+}
+
+/// One line of tooltip text.
+fn tooltip_line<'a>(font: iced::Font, color: Color, value: String) -> Element<'a, Message> {
+    text(value).size(12.0).font(font).color(color).into()
+}
+
+/// A human-readable battery status.
+fn status_label(status: Status) -> &'static str {
+    match status {
+        Status::Charging => "Charging",
+        Status::Discharging => "Discharging",
+        Status::Full => "Full",
+        Status::NotCharging => "Not charging",
+        Status::Unknown => "Unknown",
+    }
+}
+
+/// Title-case a power-profile name for display (`"power-saver"` → `"Power saver"`).
+fn profile_label(profile: &str) -> String {
+    let mut chars = profile.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + &chars.as_str().replace('-', " "),
+        None => String::new(),
+    }
+}
+
 /// The battery glyph and level, or nothing on a machine without a battery.
 fn battery_indicator(state: &Panel) -> Element<'_, Message> {
     let palette = state.theme.palette;
@@ -696,13 +893,13 @@ fn bluetooth_indicator(state: &Panel) -> Element<'_, Message> {
     let metrics = state.theme.metrics;
     let fonts = state.theme.fonts;
 
-    let Some(bluetooth) = state.bluetooth else {
+    let Some(bluetooth) = &state.bluetooth else {
         return Space::new().into();
     };
 
     let (glyph, color) = if !bluetooth.powered {
         (0xe1a9, palette.muted) // bluetooth_disabled
-    } else if bluetooth.connected > 0 {
+    } else if !bluetooth.devices.is_empty() {
         (0xe1a8, palette.green) // bluetooth_connected
     } else {
         (0xe1a7, palette.text) // bluetooth
@@ -875,7 +1072,12 @@ fn main() -> Result<(), iced_layershell::Error> {
     let theme = config::theme();
 
     daemon(
-        move || Panel::new(theme),
+        move || {
+            let panel = Panel::new(theme);
+            let id = panel.tooltip_window;
+            let settings = tooltip_settings();
+            (panel, Task::done(Message::NewLayerShell { settings, id }))
+        },
         "amber-panel",
         update,
         view,
