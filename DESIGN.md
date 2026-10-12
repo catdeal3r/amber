@@ -96,8 +96,11 @@ crate can read works without iced's codec features. The format is sniffed from
 the file contents, so the extension doesn't have to match. Images whose longest
 side exceeds 2048px are downscaled first: iced uploads images through a texture
 atlas that is capped at 2048 (`iced_wgpu`'s `image::atlas::MAX_SIZE`), and larger
-images are split into fragments that don't render correctly. With no `path` set it
-just fills with the theme `bg`. If the configured image is missing, unreadable or
+images are split into fragments that don't render correctly. Large images are also
+uploaded by iced on a background thread, which asks for a redraw once it finishes;
+that request can be dropped for a static layer surface, leaving the theme `bg` on
+screen, so the wallpaper keeps forcing its own redraws for a short window after
+startup. With no `path` set it just fills with the theme `bg`. If the configured image is missing, unreadable or
 corrupted, a `warning: ...` line is printed to stderr and shown in the centre of
 the screen. Passing an output name as the first argument pins it to that output,
 otherwise it follows the active one.

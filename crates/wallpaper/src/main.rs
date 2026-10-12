@@ -6,8 +6,10 @@
 //! works without depending on iced's heavy codec features. With no `[wallpaper]`
 //! `path` configured, it just fills the output with the theme `bg`.
 
+use std::time::Duration;
+
 use iced::widget::{Space, container, image as image_widget, text};
-use iced::{ContentFit, Element, Length, Task as Command};
+use iced::{ContentFit, Element, Length, Subscription, Task as Command};
 use iced_layershell::application;
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer};
 use iced_layershell::settings::{LayerShellSettings, Settings, StartMode};
@@ -19,12 +21,21 @@ use shell_common::theme::Theme;
 /// larger images render as garbage; see `iced_wgpu`'s `image::atlas::MAX_SIZE`.
 const ATLAS_MAX_SIDE: u32 = 2048;
 
+/// Images at least this many bytes of RGBA are uploaded by iced on a background
+/// thread, which then asks for a redraw once the upload finishes. That redraw
+/// request can be lost for a static layer surface, leaving the theme background
+/// (black) on screen until something else forces a frame. To avoid that we
+/// request our own redraws for a short while after startup.
+const SETTLE_TICKS: u32 = 40;
+
 #[to_layer_message]
 #[derive(Debug, Clone)]
 enum Message {
     /// Re-read the wallpaper from disk.
     #[allow(dead_code)]
     Reload,
+    /// Internal: keep forcing frames until the image upload has landed.
+    Tick,
 }
 
 struct Background {
@@ -34,6 +45,8 @@ struct Background {
     /// Set when the configured wallpaper couldn't be loaded; shown on screen
     /// and printed to stderr.
     warning: Option<String>,
+    /// Redraws still owed while the asynchronous image upload settles.
+    settling: u32,
 }
 
 impl Background {
@@ -43,6 +56,7 @@ impl Background {
             image: None,
             fit: cfg.fit,
             warning: None,
+            settling: SETTLE_TICKS,
         };
         background.apply(cfg);
         background
@@ -142,12 +156,25 @@ fn main() -> Result<(), iced_layershell::Error> {
         ..Settings::default()
     })
     .antialiasing(true)
+    .subscription(subscription)
     .run()
+}
+
+/// While `settling` is non-zero, tick frequently so frames keep being produced;
+/// this picks up the image once iced's background upload has finished, even if
+/// its own redraw request was dropped.
+fn subscription(state: &Background) -> Subscription<Message> {
+    if state.settling == 0 {
+        Subscription::none()
+    } else {
+        iced::time::every(Duration::from_millis(250)).map(|_| Message::Tick)
+    }
 }
 
 fn update(state: &mut Background, message: Message) -> Command<Message> {
     match message {
         Message::Reload => state.apply(&config::reload().wallpaper),
+        Message::Tick => state.settling = state.settling.saturating_sub(1),
         _ => {}
     }
 
