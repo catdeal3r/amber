@@ -40,6 +40,12 @@ const APPEAR_DELAY: Duration = Duration::from_millis(120);
 /// How long the blurred wallpaper takes to fade in once it has loaded.
 const FADE_DURATION: Duration = Duration::from_millis(320);
 
+/// Height of the fixed block that holds the lock content. The clock sits at its
+/// top and the password field at its bottom, so making it tall spreads the
+/// clock up the screen and the field down; the block itself is centred (and
+/// slid) as one piece.
+const CONTENT_HEIGHT: f32 = 470.0;
+
 /// The animation frame interval while something is moving.
 const FRAME: Duration = Duration::from_millis(16);
 
@@ -417,12 +423,12 @@ fn view(state: &Locker, _window: iced::window::Id) -> Element<'_, Message> {
     let vis: f32 = (t * 2.0).min(1.0);
 
     let time = text(&state.time)
-        .size(56.0)
+        .size(66.0)
         .font(fonts.text)
         .color(palette.text.scale_alpha(vis));
 
     let date = text(&state.date)
-        .size(16.0)
+        .size(18.0)
         .font(fonts.text)
         .color(palette.muted.scale_alpha(vis));
 
@@ -458,12 +464,13 @@ fn view(state: &Locker, _window: iced::window::Id) -> Element<'_, Message> {
     let content = column![
         time,
         date,
-        Space::new().height(Length::Fixed(28.0)),
+        Space::new().height(Length::Fill),
         password,
         Space::new().height(Length::Fixed(10.0)),
         prompt,
     ]
-    .align_x(Alignment::Center);
+    .align_x(Alignment::Center)
+    .height(Length::Fixed(CONTENT_HEIGHT));
 
     let background: Element<'_, Message> = match &state.background {
         Some(handle) => image_widget(handle.clone())
