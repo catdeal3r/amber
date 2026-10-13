@@ -34,6 +34,8 @@ pub struct Config {
     pub font: FontConfig,
     /// Desktop background.
     pub wallpaper: WallpaperConfig,
+    /// Lock screen.
+    pub lock: LockConfig,
 }
 
 /// `[font]` section.
@@ -59,6 +61,21 @@ impl Default for WallpaperConfig {
         Self {
             path: None,
             fit: ContentFit::Cover,
+        }
+    }
+}
+
+/// `[lock]` section.
+#[derive(Debug, Clone)]
+pub struct LockConfig {
+    /// PAM service name used to verify the password.
+    pub pam_service: String,
+}
+
+impl Default for LockConfig {
+    fn default() -> Self {
+        Self {
+            pam_service: "login".to_string(),
         }
     }
 }
@@ -106,6 +123,7 @@ impl Config {
     fn from_raw(raw: RawConfig) -> Self {
         let font = raw.font.unwrap_or_default();
         let wallpaper = raw.wallpaper.unwrap_or_default();
+        let lock = raw.lock.unwrap_or_default();
 
         Config {
             font: FontConfig {
@@ -120,6 +138,9 @@ impl Config {
                     Some("none") => ContentFit::None,
                     _ => ContentFit::Cover,
                 },
+            },
+            lock: LockConfig {
+                pam_service: lock.pam_service.unwrap_or_else(|| "login".to_string()),
             },
         }
     }
@@ -195,6 +216,11 @@ pub fn wallpaper() -> WallpaperConfig {
     get().wallpaper
 }
 
+/// Convenience for the current [`LockConfig`].
+pub fn lock() -> LockConfig {
+    get().lock
+}
+
 fn leak(name: String) -> &'static str {
     Box::leak(name.into_boxed_str())
 }
@@ -205,6 +231,7 @@ struct RawConfig {
     #[allow(dead_code)]
     metrics: Option<serde::de::IgnoredAny>,
     wallpaper: Option<RawWallpaper>,
+    lock: Option<RawLock>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -219,6 +246,12 @@ struct RawWallpaper {
     path: Option<String>,
     /// `cover` (default), `contain`, `fill` or `none`.
     fit: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+struct RawLock {
+    /// PAM service name, e.g. `login` or `swaylock`.
+    pam_service: Option<String>,
 }
 
 #[cfg(test)]
@@ -263,6 +296,13 @@ mod tests {
         assert!(cfg.font.icon.is_none());
         assert!(cfg.wallpaper.path.is_none());
         assert!(matches!(cfg.wallpaper.fit, ContentFit::Cover));
+        assert_eq!(cfg.lock.pam_service, "login");
+    }
+
+    #[test]
+    fn parses_lock_section() {
+        let cfg = Config::parse("[lock]\npam_service = \"swaylock\"\n").unwrap();
+        assert_eq!(cfg.lock.pam_service, "swaylock");
     }
 
     #[test]

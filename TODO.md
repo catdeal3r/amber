@@ -1,10 +1,16 @@
 # TODOs in order of importance
 - [ ] Lockscreen and swayidle integration
-  - [ ] Time
+  - [x] Time
+  - [ ] Darken + blured background of wallpaper
   - [ ] Media Player
   - [ ] Animations
-  - [ ] Swayidle lock on return from sleep
+  - [x] Swayidle lock on return from sleep
 - [ ] Brightness and volume popups
+- [ ] Add a material-symbols dot between the wifi/bluetooth icons and tray icons
+- [ ] Battery menu
+  - [ ] Switch between performance, balanced, and powersave with powerprofilesctl
+  - [ ] Show percentage and progress bar
+  - [ ] Show battery health and cycles
 - [ ] Notifications
   - [ ] Basic title and body
   - [ ] Title wraps

@@ -23,6 +23,7 @@
         vulkan-headers
         fontconfig
         freetype
+        linux-pam
       ];
     in
     {
@@ -63,6 +64,7 @@
               vulkan-loader
               fontconfig
               freetype
+              linux-pam
             ])
           }:$LD_LIBRARY_PATH"
         '';

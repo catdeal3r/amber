@@ -15,10 +15,10 @@ running on top of niri, written in Rust with [iced] through
 | `crates/panel`         | `amber-panel`    | done (v1)   |
 | `crates/launcher`      | `amber-launcher` | done (v1)   |
 | `crates/notifd`        | `amber-notifd`   | stub        |
-| `crates/locker`        | `amber-locker`   | stub        |
+| `crates/locker`        | `amber-locker`   | done (v1)   |
 
-The panel and the launcher are implemented; the rest are placeholders so the
-workspace resolves.
+The panel, the launcher and the locker are implemented; the rest are
+placeholders so the workspace resolves.
 
 ## Design language — `fuji`
 
@@ -272,14 +272,58 @@ exits.
   standard streams pointed at `/dev/null`; a spawn failure is reported on
   stderr with the app name. The launcher then exits immediately with success.
 
+## The lock screen (`amber-locker`)
+
+A one-shot locker. `swayidle` (idle timeout, resume from sleep) or the `Super+L`
+keybinding spawns it; it takes over every output and, once the password is
+accepted, exits — which releases the lock. There is no long-running daemon or
+IPC surface to drive: a trigger simply spawns the binary.
+
+```
+┌───────────────────────────────────────────────┐
+│              (full-output `bg`)               │
+│                                               │
+│                     ❄                         │  ← nix snowflake, 48px
+│                  09:41                        │  ← %H:%M, 56px
+│            Tuesday, 13 October                │  ← %A, %-d %B
+│                                               │
+│         ┌───────────────────────┐             │
+│         │        Password       │             │  ← secure text_input, 260px
+│         └───────────────────────┘             │
+└───────────────────────────────────────────────┘
+```
+
+- **Surface:** one `Layer::Overlay` surface per output (`StartMode::AllScreens`,
+  `size: Some((0, 0))`, anchored to every edge) with `exclusive_zone: -1`, so it
+  covers the bar's strut as well as the desktop. Keyboard interaction is
+  `Exclusive`; the wrapped surface paints an opaque `bg`, so nothing below shows
+  through.
+- **Layout:** the Nix snowflake, the clock (`%H:%M`) and the date stack above a
+  260px password pill (`field`, r10, 1px `muted` border) holding a centred,
+  secure `text_input`. The column is centred on the output, with the error line
+  below the pill.
+- **Authentication:** `Enter` runs `pam::authenticate` off the UI thread
+  (`tokio::task::spawn_blocking`); success exits the process, failure clears the
+  field, flashes the border and message in `red`, and refocuses.
+- **Focus:** the field is focused at startup (and again after a short delay), on
+  window focus, and on any click; the once-a-second clock tick refocuses it
+  while it is empty. Layer-shell gives no focus guarantee, so the field keeps
+  taking focus back.
+- **Single instance:** the process takes a `flock` on `amber-locker.lock` in
+  `$XDG_RUNTIME_DIR`; a second invocation (say the idle timeout and a `Super+L`
+  press racing) finds it held and exits without drawing anything.
+- **PAM binding** (`crates/locker/src/pam.rs`): a hand-written `libpam` binding
+  (`pam_start`/`pam_authenticate`/`pam_acct_mgmt`/`pam_end`) whose conversation
+  callback answers the echo-off prompt with the password and the echo-on prompt
+  with the login name. Linking `libpam` directly (from the devshell's
+  `linux-pam`) avoids the `pam-sys`/bindgen dependency; the PAM service defaults
+  to `login` and is configurable.
+
 ## Planned surfaces (spec captured, not built)
 
 - **Notifications** (`400px` toasts, `surface` r10, 10px gaps): 4s timeout with a
   3px status-coloured progress bar, click/swipe dismiss, hover pauses; default
   top-right, configurable.
-- **Lock** (per-output full-frame `bg`): Nix snowflake (48px), time + date,
-  password pill (`field` r10) with accent cursor; Enter verifies, error flashes
-  `red`.
 
 ## Configuration
 
@@ -293,6 +337,9 @@ icon = "Material Symbols Sharp"
 [wallpaper]
 path = "/home/me/pictures/wall.png"
 fit = "cover" # cover | contain | fill | none
+
+[lock]
+pam_service = "login" # /etc/pam.d service amber-locker authenticates against
 ```
 
 Loaded once at startup by `shell-common::config`, which exposes a small manager:
