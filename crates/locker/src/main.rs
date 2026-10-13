@@ -1,9 +1,10 @@
 //! `amber-locker` — the lock screen.
 //!
 //! A full-output layer-shell surface on every monitor, above everything else,
-//! with an exclusive keyboard grab. It shows the Nix snowflake, the time and
-//! date, and a password pill; a correct password (verified through PAM) exits
-//! the process and releases the lock.
+//! with an exclusive keyboard grab. Over a darkened, blurred copy of the
+//! configured wallpaper it shows the time, the date and a password pill; a
+//! correct password (verified through PAM) exits the process and releases the
+//! lock.
 //!
 //! It is a one-shot locker: `swayidle` (or a keybinding) invokes it, and it
 //! exits as soon as the user authenticates. A `flock`ed lock file makes extra
@@ -12,19 +13,37 @@
 mod pam;
 
 use std::fs::File;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use iced::widget::{Space, column, container, image, text, text_input};
+use iced::widget::{Space, Stack, column, container, image as image_widget, text, text_input};
 use iced::{Alignment, Border, Color, ContentFit, Element, Length, Padding, Task};
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer};
 use iced_layershell::settings::{LayerShellSettings, StartMode};
 use iced_layershell::{daemon, to_layer_message};
+use shell_common::assets;
+use shell_common::config::{self, WallpaperConfig};
 use shell_common::theme::{Palette, Theme};
-use shell_common::{assets, config};
 
 /// Identifier of the (single) password field, kept focused while unlocked.
 const PASSWORD: &str = "amber-locker-password";
+
+/// The wallpaper is downscaled to fit within this box before it is blurred: it
+/// is blurred anyway, and a smaller source keeps the off-thread processing
+/// quick. Comfortably under iced's texture-atlas cap (`iced_wgpu`'s `MAX_SIZE`,
+/// 2048), past which images render as garbage.
+const BLUR_MAX_SIDE: u32 = 1280;
+
+/// Blur radius, in source pixels, applied to the wallpaper.
+const BLUR_SIGMA: f32 = 24.0;
+
+/// How much to darken the wallpaper behind the lock (0 = untouched, 1 = black).
+const DARKEN: f32 = 0.5;
+
+/// Frames still owed while iced's asynchronous image upload settles; its own
+/// redraw request can be dropped for a static layer surface, so keep ticking
+/// for a short while after the wallpaper arrives.
+const SETTLE_TICKS: u32 = 40;
 
 #[to_layer_message(multi)]
 #[derive(Debug, Clone)]
@@ -41,11 +60,14 @@ enum Message {
     Submit,
     /// A PAM attempt finished.
     Authenticated(Result<(), String>),
+    /// The blurred wallpaper backdrop finished loading (`None` if unavailable).
+    Background(Option<image_widget::Handle>),
 }
 
 struct Locker {
     theme: Theme,
-    logo: image::Handle,
+    background: Option<image_widget::Handle>,
+    fit: ContentFit,
     time: String,
     date: String,
     password: String,
@@ -53,17 +75,17 @@ struct Locker {
     authenticating: bool,
     user: String,
     pam_service: String,
+    settling: u32,
 }
 
 impl Locker {
     fn new(theme: Theme) -> Self {
-        let nix = assets::nix_lock();
-        let logo = image::Handle::from_rgba(nix.width, nix.height, nix.pixels.clone());
         let now = chrono::Local::now();
 
         Locker {
             theme,
-            logo,
+            background: None,
+            fit: config::wallpaper().fit,
             time: now.format("%H:%M").to_string(),
             date: now.format("%A, %-d %B").to_string(),
             password: String::new(),
@@ -71,6 +93,7 @@ impl Locker {
             authenticating: false,
             user: current_user(),
             pam_service: config::lock().pam_service,
+            settling: 0,
         }
     }
 
@@ -79,6 +102,69 @@ impl Locker {
         self.time = now.format("%H:%M").to_string();
         self.date = now.format("%A, %-d %B").to_string();
     }
+}
+
+/// Start the lock with a solid `bg` and load the blurred wallpaper backdrop in
+/// the background, so the screen is covered immediately rather than after a
+/// second or two of image processing.
+fn boot(theme: Theme) -> (Locker, Task<Message>) {
+    let state = Locker::new(theme);
+    let wallpaper = config::wallpaper();
+
+    let backdrop = Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || load_wallpaper(&wallpaper))
+                .await
+                .ok()
+                .flatten()
+        },
+        Message::Background,
+    );
+
+    (state, Task::batch([initial_focus(), backdrop]))
+}
+
+/// Decode the configured wallpaper, blur it and darken it for use as the lock
+/// backdrop. Returns `None` (falling back to the solid `bg`) when there is no
+/// wallpaper configured or it can't be read; problems are reported on stderr.
+fn load_wallpaper(cfg: &WallpaperConfig) -> Option<image_widget::Handle> {
+    let path = cfg.path.as_deref()?;
+
+    match blurred(path) {
+        Ok(handle) => Some(handle),
+        Err(message) => {
+            eprintln!("warning: {message}");
+            None
+        }
+    }
+}
+
+/// Read an image file, blur and darken it, and hand it to iced as raw RGBA.
+fn blurred(path: &Path) -> Result<image_widget::Handle, String> {
+    let decoded = image::ImageReader::open(path)
+        .map_err(|err| format!("cannot open wallpaper {}: {err}", path.display()))?
+        .with_guessed_format()
+        .map_err(|err| format!("cannot read wallpaper {}: {err}", path.display()))?
+        .decode()
+        .map_err(|err| format!("wallpaper is corrupted: {}: {err}", path.display()))?;
+
+    // A fast thumbnail is plenty: the result is blurred beyond recognition.
+    let small = if decoded.width() > BLUR_MAX_SIDE || decoded.height() > BLUR_MAX_SIDE {
+        decoded.thumbnail(BLUR_MAX_SIDE, BLUR_MAX_SIDE)
+    } else {
+        decoded
+    };
+
+    let rgba = small.into_rgba8();
+    let blurred = image::imageops::fast_blur(&rgba, BLUR_SIGMA);
+    let darkened = image::imageops::brighten(&blurred, -((DARKEN * 255.0).round() as i32));
+
+    let (width, height) = darkened.dimensions();
+    Ok(image_widget::Handle::from_rgba(
+        width,
+        height,
+        darkened.into_raw(),
+    ))
 }
 
 fn main() -> Result<(), iced_layershell::Error> {
@@ -92,44 +178,40 @@ fn main() -> Result<(), iced_layershell::Error> {
     let theme = config::theme();
     let default_font = theme.fonts.text;
 
-    daemon(
-        move || (Locker::new(theme), initial_focus()),
-        "amber-locker",
-        update,
-        view,
-    )
-    .settings(iced_layershell::Settings {
-        default_font,
-        default_text_size: iced::Pixels(15.0),
-        layer_settings: LayerShellSettings {
-            anchor: Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right,
-            layer: Layer::Overlay,
-            // `-1` covers the full output, ignoring the bar's exclusive zone.
-            exclusive_zone: -1,
-            size: Some((0, 0)),
-            margin: (0, 0, 0, 0),
-            keyboard_interactivity: KeyboardInteractivity::Exclusive,
-            start_mode: StartMode::AllScreens,
-            events_transparent: false,
-        },
-        ..iced_layershell::Settings::default()
-    })
-    .antialiasing(true)
-    .font(assets::COMMIT_MONO)
-    .subscription(subscription)
-    .theme(iced::Theme::Dark)
-    // The lock paints its own full-output background.
-    .style(|_state: &Locker, _theme: &iced::Theme| iced::theme::Style {
-        background_color: Color::TRANSPARENT,
-        text_color: Color::WHITE,
-    })
-    .run()
+    daemon(move || boot(theme), "amber-locker", update, view)
+        .settings(iced_layershell::Settings {
+            default_font,
+            default_text_size: iced::Pixels(15.0),
+            layer_settings: LayerShellSettings {
+                anchor: Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right,
+                layer: Layer::Overlay,
+                // `-1` covers the full output, ignoring the bar's exclusive zone.
+                exclusive_zone: -1,
+                size: Some((0, 0)),
+                margin: (0, 0, 0, 0),
+                keyboard_interactivity: KeyboardInteractivity::Exclusive,
+                start_mode: StartMode::AllScreens,
+                events_transparent: false,
+            },
+            ..iced_layershell::Settings::default()
+        })
+        .antialiasing(true)
+        .font(assets::COMMIT_MONO)
+        .subscription(subscription)
+        .theme(iced::Theme::Dark)
+        // The lock paints its own full-output background.
+        .style(|_state: &Locker, _theme: &iced::Theme| iced::theme::Style {
+            background_color: Color::TRANSPARENT,
+            text_color: Color::WHITE,
+        })
+        .run()
 }
 
 fn update(state: &mut Locker, message: Message) -> Task<Message> {
     match message {
         Message::Tick => {
             state.refresh();
+            state.settling = state.settling.saturating_sub(1);
             if state.password.is_empty() && !state.authenticating && state.error.is_none() {
                 focus()
             } else {
@@ -181,16 +263,31 @@ fn update(state: &mut Locker, message: Message) -> Task<Message> {
             state.error = Some(error);
             focus()
         }
+        Message::Background(handle) => {
+            if handle.is_some() {
+                state.settling = SETTLE_TICKS;
+            }
+            state.background = handle;
+            Task::none()
+        }
         // Layer-shell messages are handled by the runtime.
         _ => Task::none(),
     }
 }
 
-fn subscription(_state: &Locker) -> iced::Subscription<Message> {
-    iced::Subscription::batch([
+fn subscription(state: &Locker) -> iced::Subscription<Message> {
+    let mut subscriptions = vec![
         iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick),
         iced::event::listen_with(on_event),
-    ])
+    ];
+
+    // Keep producing frames until iced's wallpaper upload has landed, so the
+    // backdrop shows up promptly even if its redraw request was dropped.
+    if state.settling > 0 {
+        subscriptions.push(iced::time::every(Duration::from_millis(200)).map(|_| Message::Tick));
+    }
+
+    iced::Subscription::batch(subscriptions)
 }
 
 fn on_event(
@@ -215,11 +312,6 @@ fn view(state: &Locker, _window: iced::window::Id) -> Element<'_, Message> {
     let palette = state.theme.palette;
     let fonts = state.theme.fonts;
     let invalid = state.error.is_some();
-
-    let logo = image(state.logo.clone())
-        .width(Length::Fixed(48.0))
-        .height(Length::Fixed(48.0))
-        .content_fit(ContentFit::Contain);
 
     let time = text(&state.time)
         .size(56.0)
@@ -260,29 +352,46 @@ fn view(state: &Locker, _window: iced::window::Id) -> Element<'_, Message> {
         None => Space::new().height(Length::Fixed(16.0)).into(),
     };
 
-    let content = column![
-        logo,
-        Space::new().height(Length::Fixed(24.0)),
-        time,
-        date,
-        Space::new().height(Length::Fixed(28.0)),
-        password,
-        Space::new().height(Length::Fixed(10.0)),
-        prompt,
-    ]
-    .align_x(Alignment::Center)
-    .width(Length::Fill);
+    let content = container(
+        column![
+            time,
+            date,
+            Space::new().height(Length::Fixed(28.0)),
+            password,
+            Space::new().height(Length::Fixed(10.0)),
+            prompt,
+        ]
+        .align_x(Alignment::Center)
+        .width(Length::Fill),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .center_x(Length::Fill)
+    .center_y(Length::Fill);
 
-    container(content)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .center_x(Length::Fill)
-        .center_y(Length::Fill)
-        .style(move |_theme: &iced::Theme| container::Style {
-            background: Some(palette.bg.into()),
-            ..container::Style::default()
-        })
-        .into()
+    let background: Element<'_, Message> = match &state.background {
+        Some(handle) => image_widget(handle.clone())
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .content_fit(state.fit)
+            .into(),
+        None => Space::new().width(Length::Fill).height(Length::Fill).into(),
+    };
+
+    container(
+        Stack::new()
+            .push(background)
+            .push(content)
+            .width(Length::Fill)
+            .height(Length::Fill),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .style(move |_theme: &iced::Theme| container::Style {
+        background: Some(palette.bg.into()),
+        ..container::Style::default()
+    })
+    .into()
 }
 
 fn password_style(palette: Palette, invalid: bool) -> text_input::Style {
@@ -291,7 +400,7 @@ fn password_style(palette: Palette, invalid: bool) -> text_input::Style {
         border: Border {
             color: if invalid { palette.red } else { palette.muted },
             width: 1.0,
-            radius: 10.0.into(),
+            radius: 0.0.into(),
         },
         icon: palette.muted,
         placeholder: palette.muted,

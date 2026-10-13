@@ -11,7 +11,6 @@
 //! magick snowflake.svg -background none -trim +repage \
 //!   -fuzz 0% -transparent white -fill white -colorize 100 snow.png
 //! magick snow.png -resize 18x18 -bordercolor none -border 3 -type TrueColorAlpha PNG32:nix-bar.png
-//! magick snow.png -resize 48x48 -type TrueColorAlpha PNG32:nix-lock.png
 //! ```
 
 use std::sync::LazyLock;
@@ -40,12 +39,6 @@ fn decode(png: &'static [u8]) -> Rgba {
 pub fn nix_bar() -> &'static Rgba {
     static BAR: LazyLock<Rgba> = LazyLock::new(|| decode(include_bytes!("../assets/nix-bar.png")));
     &BAR
-}
-
-/// The Nix snowflake at 48px, for the lock screen.
-pub fn nix_lock() -> &'static Rgba {
-    static LOCK: LazyLock<Rgba> = LazyLock::new(|| decode(include_bytes!("../assets/nix-lock.png")));
-    &LOCK
 }
 
 /// Bundled CommitMono Regular (SIL Open Font License 1.1).

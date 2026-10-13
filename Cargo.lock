@@ -1952,6 +1952,7 @@ dependencies = [
  "chrono",
  "iced",
  "iced_layershell",
+ "image",
  "serde",
  "serde_json",
  "shell-common",

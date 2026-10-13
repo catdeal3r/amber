@@ -26,7 +26,7 @@ Semantic tokens (see `crates/shell-common/src/theme.rs`):
 
 | token         | role                                   | value     |
 | ------------- | -------------------------------------- | --------- |
-| `bg`          | bar, overlays, lock background         | `#0f0f0f` |
+| `bg`          | bar, overlays, lock backdrop fallback  | `#0f0f0f` |
 | `surface`     | cards, rows, notification background   | `#131313` |
 | `hover`       | hover fill                             | `#181818` |
 | `field`       | search field, progress track           | `#1d1d1d` |
@@ -38,9 +38,9 @@ Semantic tokens (see `crates/shell-common/src/theme.rs`):
 | `green`       | status green                           | `#89ab8a` |
 | `yellow`      | attention                              | `#c4c19e` |
 
-- **Radius:** `10` for cards/overlays, `6` for tight chips. The launcher and the
-  tray context menu opt out of rounding entirely: their cards (and the launcher's
-  search pill and rows) are square-cornered.
+- **Radius:** none. Every surface, card, chip and field is square-cornered —
+  there are no rounded corners anywhere, and the theme carries no radius metric
+  to reach for. New widgets must stay square too.
 - **Fonts:** `monospace` for text, `Material Symbols Sharp` for icons.
   Both are resolved from the system font stack and overridable.
   CommitMono Regular is bundled (`shell-common/assets/`, OFL-1.1) and registered
@@ -71,7 +71,7 @@ it can create extra layer surfaces — the tray context-menu overlay (see
   - focused → `text` (white)
   - occupied (has windows) → `accent` (brown)
   - empty → `muted`
-  - hover → `hover` fill, `6px` radius
+  - hover → `hover` fill (square corners)
   - left click → `niri msg action focus-workspace <idx>`
 - **Right:** tray icons, then Wi-Fi, Bluetooth, battery, then the clock; each
   indicator is omitted entirely when its hardware is absent.
@@ -281,9 +281,9 @@ IPC surface to drive: a trigger simply spawns the binary.
 
 ```
 ┌───────────────────────────────────────────────┐
-│              (full-output `bg`)               │
+│      (full-output blurred + darkened           │
+│              wallpaper)                        │
 │                                               │
-│                     ❄                         │  ← nix snowflake, 48px
 │                  09:41                        │  ← %H:%M, 56px
 │            Tuesday, 13 October                │  ← %A, %-d %B
 │                                               │
@@ -296,12 +296,19 @@ IPC surface to drive: a trigger simply spawns the binary.
 - **Surface:** one `Layer::Overlay` surface per output (`StartMode::AllScreens`,
   `size: Some((0, 0))`, anchored to every edge) with `exclusive_zone: -1`, so it
   covers the bar's strut as well as the desktop. Keyboard interaction is
-  `Exclusive`; the wrapped surface paints an opaque `bg`, so nothing below shows
-  through.
-- **Layout:** the Nix snowflake, the clock (`%H:%M`) and the date stack above a
-  260px password pill (`field`, r10, 1px `muted` border) holding a centred,
-  secure `text_input`. The column is centred on the output, with the error line
-  below the pill.
+  `Exclusive`; the wrapped surface is opaque, so nothing below shows through.
+- **Backdrop:** the configured `[wallpaper]` image, decoded, thumbnailed into a
+  1280px box, Gaussian-blurred and darkened to half brightness, then laid behind
+  the content (`ContentFit` from the config). It is built on a background thread,
+  so the surface covers the screen with the solid `bg` immediately and the
+  wallpaper swaps in a moment later; a short burst of ticks then keeps frames
+  coming until iced's asynchronous image upload lands (see `amber-wallpaper`).
+  With no wallpaper configured — or if it can't be read — it stays on the solid
+  `bg`, with the problem reported on stderr.
+- **Layout:** the clock (`%H:%M`) and the date stack above a 260px password
+  field (`field`, square corners, 1px `muted` border) holding a centred, secure
+  `text_input`. The column is centred on the output, with the error line below
+  the field.
 - **Authentication:** `Enter` runs `pam::authenticate` off the UI thread
   (`tokio::task::spawn_blocking`); success exits the process, failure clears the
   field, flashes the border and message in `red`, and refocuses.
@@ -321,7 +328,7 @@ IPC surface to drive: a trigger simply spawns the binary.
 
 ## Planned surfaces (spec captured, not built)
 
-- **Notifications** (`400px` toasts, `surface` r10, 10px gaps): 4s timeout with a
+- **Notifications** (`400px` toasts, `surface`, 10px gaps): 4s timeout with a
   3px status-coloured progress bar, click/swipe dismiss, hover pauses; default
   top-right, configurable.
 

@@ -12,6 +12,7 @@ path = "src/main.rs"
 shell-common = { path = "../shell-common" }
 iced = { workspace = true }
 iced_layershell = { workspace = true }
+image = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -1062,7 +1062,7 @@ fn tag<'a>(state: &'a Panel, workspace: &'a niri::Workspace) -> Element<'a, Mess
             .into(),
         ),
         text_color: color,
-        border: Border::default().rounded(metrics.radius_sm),
+        border: Border::default(),
         ..button::Style::default()
     })
     .into()

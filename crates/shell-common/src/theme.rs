@@ -41,15 +41,11 @@ pub struct Fonts {
     pub icon: iced_core::Font,
 }
 
-/// Spacing, radii and sizing shared across components.
+/// Spacing and sizing shared across components.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Metrics {
     /// bar height in logical pixels
     pub bar_height: f32,
-    /// small radius (tight chips, underlines)
-    pub radius_sm: f32,
-    /// card / overlay radius
-    pub radius: f32,
     /// window gaps feel (niri gaps), used as baseline spacing
     pub gap: f32,
     /// horizontal gap between bar clusters
@@ -93,8 +89,6 @@ pub const FUJI: Theme = Theme {
     },
     metrics: Metrics {
         bar_height: 42.0,
-        radius_sm: 6.0,
-        radius: 10.0,
         gap: 7.0,
         bar_cluster_gap: 15.0,
         overlay_width: 500.0,
