@@ -3,7 +3,7 @@
   - [x] Time
   - [x] Darken + blured background of wallpaper
   - [ ] Media Player
-  - [ ] Animations
+  - [x] Animations
   - [x] Swayidle lock on return from sleep
 - [ ] Brightness and volume popups
 - [ ] Add a material-symbols dot between the wifi/bluetooth icons and tray icons
@@ -11,6 +11,11 @@
   - [ ] Switch between performance, balanced, and powersave with powerprofilesctl
   - [ ] Show percentage and progress bar
   - [ ] Show battery health and cycles
+- [ ] Media player that appears on hover of the workspace widget
+  - [ ] Title + artist
+  - [ ] Cover art as background (just plain black if no cover art)
+  - [ ] Play/pause, next, previous controls
+  - [ ] Shuffle/loop controls if supported by player
 - [ ] Notifications
   - [ ] Basic title and body
   - [ ] Title wraps
@@ -48,11 +53,6 @@
     - [ ] Brightness (hidden when the is unable to be controled by the OS)
       - [ ] Night light colour temperture adjustment in submenu
       - [ ] Night light toggle in submenu
-- [ ] Media player that appears on hover of the workspace widget
-  - [ ] Title + artist
-  - [ ] Cover art as background (just plain black if no cover art)
-  - [ ] Play/pause, next, previous controls
-  - [ ] Shuffle/loop controls if supported by player
 - [ ] Notification center that appears on click of time
   - [ ] Time of notification in top right
   - [ ] Notification history
