@@ -1,7 +1,7 @@
 # TODOs in order of importance
 - [ ] Lockscreen and swayidle integration
   - [x] Time
-  - [ ] Darken + blured background of wallpaper
+  - [x] Darken + blured background of wallpaper
   - [ ] Media Player
   - [ ] Animations
   - [x] Swayidle lock on return from sleep
