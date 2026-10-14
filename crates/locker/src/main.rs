@@ -430,7 +430,7 @@ fn view(state: &Locker, _window: iced::window::Id) -> Element<'_, Message> {
     let date = text(&state.date)
         .size(18.0)
         .font(fonts.text)
-        .color(palette.muted.scale_alpha(vis));
+        .color(palette.text.scale_alpha(vis * 0.75));
 
     let placeholder = if state.authenticating {
         "Authenticating…"

@@ -2012,6 +2012,7 @@ dependencies = [
  "iced_layershell",
  "image",
  "shell-common",
+ "tokio",
 ]
 
 [[package]]

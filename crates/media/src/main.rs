@@ -3,9 +3,10 @@
 //! A small card that hangs just below the centred workspace indicator in the
 //! bar and shows whatever is currently playing. Collapsed it is a single-line
 //! `"{artist} - {title}"` tag; hovering it grows the card into a fuller player
-//! with the (blurred and darkened) cover art as its background and transport
-//! controls. It paints nothing at all when no track is loaded, so it only
-//! appears while there is media to show.
+//! with a square cover thumbnail, the track text, a seekable timeline and the
+//! transport controls over a blurred, darkened wash of the cover art. It paints
+//! nothing at all when no track is loaded, so it only appears while there is
+//! media to show.
 //!
 //! The surface is a fixed-size, top-anchored overlay whose *input region* is
 //! carved out per state: nothing when hidden, just the tag while collapsed, and
@@ -16,9 +17,12 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use iced::animation::Easing;
+use iced::widget::slider::{
+    Handle as SliderHandle, HandleShape, Rail, Status as SliderStatus, Style as SliderStyle,
+};
 use iced::widget::text::Wrapping;
 use iced::widget::{
-    Space, Stack, button, column, container, image as image_widget, mouse_area, row, text,
+    Slider, Space, Stack, button, column, container, image as image_widget, mouse_area, row, text,
 };
 use iced::{Alignment, Border, Color, ContentFit, Element, Length, Subscription, Task};
 use iced_layershell::actions::ActionCallback;
@@ -32,11 +36,21 @@ use shell_common::{assets, config};
 /// How often the snapshot is re-read from the MPRIS watcher.
 const POLL: Duration = Duration::from_millis(500);
 
-/// The animation frame interval while the card is growing or shrinking.
+/// How often the card is redrawn while an animation runs.
 const FRAME: Duration = Duration::from_millis(16);
 
-/// How long the tag ⇄ player transition takes.
+/// How often the card is redrawn while the playhead is advancing.
+const SCRUB: Duration = Duration::from_millis(200);
+
+/// How long the grow/shrink transition and the slide-in/out transition take.
 const EXPAND_DURATION: Duration = Duration::from_millis(220);
+
+/// How often a (blocking) fullscreen check is allowed to run.
+const FULLSCREEN: Duration = Duration::from_millis(1000);
+
+/// How long to trust our own playhead after a seek, ignoring snapshot reads
+/// until the host has had time to apply it.
+const SEEK_SETTLE: Duration = Duration::from_millis(800);
 
 /// Gap between the bottom of the bar and the top of the card.
 ///
@@ -48,7 +62,16 @@ const GAP: i32 = 4;
 /// The window is always laid out at the expanded player's size; the collapsed
 /// tag is centred inside it and the input region hides the rest.
 const PLAYER_W: u32 = 420;
-const PLAYER_H: u32 = 150;
+const PLAYER_H: u32 = 196;
+
+/// Edge length of the square cover thumbnail shown beside the track text.
+const COVER: f32 = 96.0;
+
+/// Font size of the elapsed/total time either side of the timeline.
+const TIME_SIZE: f32 = 11.0;
+
+/// Height of the scrubber, and therefore the size of its square handle.
+const SCRUBBER: f32 = 12.0;
 
 /// Height of the collapsed tag, and therefore of its input region.
 const TAG_H: i32 = 34;
@@ -105,6 +128,8 @@ enum Message {
     /// Advance the clock (and the grow/shrink animation) to this instant, and
     /// re-read the media snapshot.
     Tick(Instant),
+    /// The result of an off-thread fullscreen check.
+    Fullscreen(bool),
     /// The pointer entered the card.
     HoverEnter,
     /// The pointer left the card.
@@ -119,6 +144,10 @@ enum Message {
     ToggleShuffle,
     /// Advance the loop mode.
     CycleLoop,
+    /// Preview a new playhead position (seconds) while the timeline is dragged.
+    SeekPreview(f32),
+    /// Commit the previewed playhead position.
+    SeekCommit,
 }
 
 /// The interactive part of the surface, in window-local coordinates.
@@ -142,12 +171,29 @@ struct MediaApp {
     now: Instant,
     /// The cover-art URL currently decoded, if any.
     art_url: Option<String>,
-    /// The decoded cover art, if the current track has a local one.
+    /// The blurred cover art drawn behind the card, if any.
     art: Option<image_widget::Handle>,
+    /// The sharp cover art shown as the thumbnail beside the text, if any.
+    art_thumb: Option<image_widget::Handle>,
     /// Redraws still owed while the cover-art upload settles.
     settling: u32,
     /// Whether the focused window is fullscreen, in which case nothing is shown.
     fullscreen: bool,
+    /// Whether a fullscreen check is currently in flight off the UI thread.
+    checking_fullscreen: bool,
+    /// When the last fullscreen check was started.
+    checked_fullscreen_at: Instant,
+    /// The card's slide-in/slide-out animation (media detected ⇄ gone).
+    presence: iced::Animation<bool>,
+    /// The playhead position last seen in a snapshot, to detect fresh reads.
+    seen_position: Option<Duration>,
+    /// The playhead position, and the instant it was read, used to extrapolate.
+    position_base: Duration,
+    position_base_at: Instant,
+    /// The playhead being dragged on the timeline, in seconds, if any.
+    seek_preview: Option<f32>,
+    /// When the last seek was issued, to ignore the stale reads that follow.
+    seek_pending: Option<Instant>,
     /// The input region last applied to the surface.
     region: Region,
 }
@@ -165,34 +211,111 @@ impl MediaApp {
             now: Instant::now(),
             art_url: None,
             art: None,
+            art_thumb: None,
             settling: 0,
             fullscreen: false,
+            checking_fullscreen: false,
+            checked_fullscreen_at: Instant::now(),
+            presence: iced::Animation::new(false)
+                .duration(EXPAND_DURATION)
+                .easing(Easing::EaseOutCubic),
+            seen_position: None,
+            position_base: Duration::ZERO,
+            position_base_at: Instant::now(),
+            seek_preview: None,
+            seek_pending: None,
             region: Region::Empty,
         }
     }
 
-    /// Whether the card is drawn at all: there is media to show and the focused
-    /// window is not fullscreen.
-    fn shown(&self) -> bool {
+    /// Whether the card *should* be showing: there is media and the focused
+    /// window is not fullscreen. The slide animation chases this.
+    fn wanted(&self) -> bool {
         self.state.visible() && !self.fullscreen
+    }
+
+    /// The slide progress: `0.0` fully hidden above, `1.0` fully down.
+    fn presence(&self) -> f32 {
+        self.presence
+            .interpolate(0.0, 1.0, self.now)
+            .clamp(0.0, 1.0)
+    }
+
+    /// The playhead to draw: the extrapolated position while playing, else the
+    /// last snapshot position, clamped to the track length.
+    fn playhead(&self) -> Duration {
+        let position = if self.state.playback == Playback::Playing {
+            self.position_base + self.now.saturating_duration_since(self.position_base_at)
+        } else {
+            self.position_base
+        };
+        match self.state.length {
+            Some(length) => position.min(length),
+            None => position,
+        }
     }
 }
 
 fn update(state: &mut MediaApp, message: Message) -> Task<Message> {
+    let mut tasks = Task::none();
+
     match message {
         Message::Tick(now) => {
             state.now = now;
             state.state = state.media.state();
             state.settling = state.settling.saturating_sub(1);
-            // Only ask niri while there is something to hide; a fullscreen
-            // check costs two `niri msg` invocations.
-            state.fullscreen = state.state.visible() && shell_common::niri::is_fullscreen();
+            // Slide the card in when media appears, back up when it goes.
+            state.presence.go_mut(state.wanted(), now);
+
+            // Re-anchor the playhead on fresh snapshot reads so the timeline
+            // extrapolates smoothly between the watcher's coarse polls. Ignore
+            // reads that race a seek we just issued — the host may not have
+            // applied it yet, and trusting the stale value snaps the bar back.
+            if state.seen_position != state.state.position {
+                let settling = state
+                    .seek_pending
+                    .is_some_and(|at| now.saturating_duration_since(at) < SEEK_SETTLE);
+                if !settling {
+                    state.seek_pending = None;
+                    state.seen_position = state.state.position;
+                    if let Some(position) = state.state.position {
+                        state.position_base = position;
+                        state.position_base_at = now;
+                    }
+                }
+            }
+
+            // A fullscreen check shells out to niri twice (tens of
+            // milliseconds), so run it off the UI thread, throttled, and only
+            // while the card is at rest — the fast animation frames must stay
+            // cheap.
+            if state.state.visible()
+                && !state.progress.is_animating(now)
+                && !state.presence.is_animating(now)
+                && !state.checking_fullscreen
+                && now.saturating_duration_since(state.checked_fullscreen_at) >= FULLSCREEN
+            {
+                state.checking_fullscreen = true;
+                state.checked_fullscreen_at = now;
+                tasks = Task::perform(
+                    async {
+                        tokio::task::spawn_blocking(shell_common::niri::is_fullscreen)
+                            .await
+                            .unwrap_or(false)
+                    },
+                    Message::Fullscreen,
+                );
+            }
             // Collapse while hidden so the card doesn't reappear expanded.
-            if !state.shown() && state.expanded {
+            if !state.wanted() && state.expanded {
                 state.expanded = false;
                 state.progress.go_mut(false, state.now);
             }
             update_art(state);
+        }
+        Message::Fullscreen(fullscreen) => {
+            state.checking_fullscreen = false;
+            state.fullscreen = fullscreen;
         }
         Message::HoverEnter => {
             state.expanded = true;
@@ -213,34 +336,58 @@ fn update(state: &mut MediaApp, message: Message) -> Task<Message> {
             }
         }
         Message::CycleLoop => state.media.command(Command::CycleLoop),
+        Message::SeekPreview(seconds) => state.seek_preview = Some(seconds),
+        Message::SeekCommit => {
+            if let Some(seconds) = state.seek_preview.take() {
+                let now = Instant::now();
+                state.now = now;
+                let target = Duration::from_secs_f32(seconds.max(0.0));
+                state.media.command(Command::Seek(target));
+                // Hold the playhead at the target, and ignore snapshot reads
+                // until the host has had time to apply the seek.
+                state.position_base = target;
+                state.position_base_at = now;
+                state.seen_position = Some(target);
+                state.seek_pending = Some(now);
+            }
+        }
         // Layer-shell actions injected by `#[to_layer_message]`.
         _ => return Task::none(),
     }
 
     let region = desired_region(state);
-    if region == state.region {
-        Task::none()
-    } else {
+    if region != state.region {
         state.region = region;
-        Task::done(Message::SetInputRegion(region_callback(region)))
+        tasks = Task::batch([
+            tasks,
+            Task::done(Message::SetInputRegion(region_callback(region))),
+        ]);
     }
+    tasks
 }
 
-/// Drive frames while the card is growing/shrinking; tick faster while the
-/// cover-art upload settles; otherwise just poll the media snapshot.
+/// Drive frames while the card is animating; tick faster while the cover-art
+/// upload settles or the playhead advances; otherwise poll the snapshot.
 fn subscription(state: &MediaApp) -> Subscription<Message> {
-    let interval = if state.progress.is_animating(state.now) {
-        FRAME
-    } else if state.settling > 0 {
-        Duration::from_millis(250)
-    } else {
-        POLL
-    };
+    let interval =
+        if state.progress.is_animating(state.now) || state.presence.is_animating(state.now) {
+            FRAME
+        } else if state.settling > 0 {
+            Duration::from_millis(250)
+        } else if state.expanded
+            && state.state.playback == Playback::Playing
+            && state.state.length.is_some()
+        {
+            SCRUB
+        } else {
+            POLL
+        };
     iced::time::every(interval).map(Message::Tick)
 }
 
 fn view(state: &MediaApp) -> Element<'_, Message> {
-    if !state.shown() {
+    let presence = state.presence();
+    if !state.wanted() && presence <= 0.0 {
         return Space::new().width(Length::Fill).height(Length::Fill).into();
     }
 
@@ -251,7 +398,7 @@ fn view(state: &MediaApp) -> Element<'_, Message> {
         .clamp(0.0, 1.0);
 
     mouse_area(
-        container(animated_card(state, t))
+        container(animated_card(state, t, presence))
             .width(Length::Fill)
             .height(Length::Fill)
             .align_x(Alignment::Center)
@@ -267,12 +414,15 @@ fn view(state: &MediaApp) -> Element<'_, Message> {
 /// `t` runs from `0.0` (the small tag) to `1.0` (the full player). The card
 /// grows, the cover art fades in behind a wash the colour of the tag, and the
 /// tag and player contents cross-fade through the middle of the transition.
-fn animated_card<'a>(state: &'a MediaApp, t: f32) -> Element<'a, Message> {
+/// `presence` (0 = tucked above the bar, 1 = fully down) clips the card as it
+/// slides in when media appears and up when it goes.
+fn animated_card<'a>(state: &'a MediaApp, t: f32, presence: f32) -> Element<'a, Message> {
     let palette = state.theme.palette;
 
     let tag_w = tag_width(&collapsed_label(state)).min(PLAYER_W) as f32;
     let width = lerp(tag_w, PLAYER_W as f32, t);
     let height = lerp(TAG_H as f32, PLAYER_H as f32, t);
+    let clip_height = lerp(0.0, height, presence);
 
     let background: Element<'a, Message> = match &state.art {
         Some(handle) => image_widget(handle.clone())
@@ -301,7 +451,7 @@ fn animated_card<'a>(state: &'a MediaApp, t: f32) -> Element<'a, Message> {
             ..container::Style::default()
         });
 
-    Stack::new()
+    let stack = Stack::new()
         .width(Length::Fixed(width))
         .height(Length::Fixed(height))
         .push(background)
@@ -309,7 +459,13 @@ fn animated_card<'a>(state: &'a MediaApp, t: f32) -> Element<'a, Message> {
         .push(wash)
         .push(tag_body(state, tag_alpha))
         .push(player_body(state, player_alpha))
-        .push(border)
+        .push(border);
+
+    container(stack)
+        .width(Length::Fixed(width))
+        .height(Length::Fixed(clip_height))
+        .align_y(Alignment::End)
+        .clip(true)
         .into()
 }
 
@@ -345,10 +501,26 @@ fn tag_body<'a>(state: &'a MediaApp, alpha: f32) -> Element<'a, Message> {
 /// The expanded player's contents: the track text over the art, with the
 /// transport controls along the bottom.
 fn player_body<'a>(state: &'a MediaApp, alpha: f32) -> Element<'a, Message> {
+    column![
+        row![cover(state, alpha), track_text(state, alpha)]
+            .spacing(12.0)
+            .align_y(Alignment::Center),
+        timeline(state, alpha),
+        controls(state, alpha),
+    ]
+    .spacing(12.0)
+    .padding(PLAYER_PADDING)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
+}
+
+/// The track title over the artist, as a column beside the cover thumbnail.
+fn track_text<'a>(state: &'a MediaApp, alpha: f32) -> Element<'a, Message> {
     let palette = state.theme.palette;
     let fonts = state.theme.fonts;
+    let text_width = PLAYER_W as f32 - 2.0 * PLAYER_PADDING - COVER - 12.0;
 
-    let text_width = PLAYER_W as f32 - 2.0 * PLAYER_PADDING;
     let title = ellipsize(
         state.state.title.as_deref().unwrap_or_default(),
         cells_for(text_width, TITLE_SIZE),
@@ -358,25 +530,131 @@ fn player_body<'a>(state: &'a MediaApp, alpha: f32) -> Element<'a, Message> {
         cells_for(text_width, ARTIST_SIZE),
     );
 
-    column![
-        text(title)
-            .size(TITLE_SIZE)
-            .font(fonts.text)
-            .color(palette.text.scale_alpha(alpha))
-            .wrapping(Wrapping::None),
-        text(artist)
-            .size(ARTIST_SIZE)
-            .font(fonts.text)
-            .color(palette.muted.scale_alpha(alpha))
-            .wrapping(Wrapping::None),
-        Space::new().width(Length::Fill).height(Length::Fill),
-        controls(state, alpha),
-    ]
-    .spacing(2.0)
-    .padding(PLAYER_PADDING)
+    container(
+        column![
+            text(title)
+                .size(TITLE_SIZE)
+                .font(fonts.text)
+                .color(palette.text.scale_alpha(alpha))
+                .wrapping(Wrapping::None),
+            text(artist)
+                .size(ARTIST_SIZE)
+                .font(fonts.text)
+                .color(palette.text.scale_alpha(alpha * 0.75))
+                .wrapping(Wrapping::None),
+        ]
+        .spacing(2.0),
+    )
     .width(Length::Fill)
     .height(Length::Fill)
+    .align_y(Alignment::Center)
     .into()
+}
+
+/// The square cover thumbnail, or a plain placeholder when there is no art.
+fn cover<'a>(state: &'a MediaApp, alpha: f32) -> Element<'a, Message> {
+    let palette = state.theme.palette;
+    match &state.art_thumb {
+        Some(handle) => image_widget(handle.clone())
+            .content_fit(ContentFit::Cover)
+            .width(COVER)
+            .height(COVER)
+            .opacity(alpha)
+            .into(),
+        None => container(Space::new().width(COVER).height(COVER))
+            .style(move |_theme: &iced::Theme| container::Style {
+                background: Some(palette.field.scale_alpha(alpha).into()),
+                ..container::Style::default()
+            })
+            .into(),
+    }
+}
+
+/// The elapsed / total time either side of an interactive progress bar.
+fn timeline<'a>(state: &'a MediaApp, alpha: f32) -> Element<'a, Message> {
+    let palette = state.theme.palette;
+    let fonts = state.theme.fonts;
+
+    let Some(length) = state.state.length else {
+        return Space::new().height(Length::Fixed(0.0)).into();
+    };
+    let total = length.as_secs_f32();
+    if total <= 0.0 {
+        return Space::new()
+            .width(Length::Fill)
+            .height(Length::Fixed(0.0))
+            .into();
+    }
+
+    let elapsed = state
+        .seek_preview
+        .unwrap_or_else(|| state.playhead().as_secs_f32())
+        .clamp(0.0, total);
+
+    let bar = Slider::new(0.0..=total, elapsed, Message::SeekPreview)
+        .on_release(Message::SeekCommit)
+        .width(Length::Fill)
+        .height(SCRUBBER)
+        .style(scrubber_style(palette, alpha));
+
+    row![
+        text(format_time(elapsed))
+            .size(TIME_SIZE)
+            .font(fonts.text)
+            .color(palette.text.scale_alpha(alpha * 0.75)),
+        container(bar)
+            .width(Length::Fill)
+            .align_y(Alignment::Center),
+        text(format_time(total))
+            .size(TIME_SIZE)
+            .font(fonts.text)
+            .color(palette.text.scale_alpha(alpha * 0.75)),
+    ]
+    .spacing(8.0)
+    .align_y(Alignment::Center)
+    .width(Length::Fill)
+    .into()
+}
+
+/// The appearance of the timeline scrubber: a thin flat rail, no round corners.
+fn scrubber_style(
+    palette: shell_common::theme::Palette,
+    alpha: f32,
+) -> impl Fn(&iced::Theme, SliderStatus) -> SliderStyle {
+    move |_theme, _status| SliderStyle {
+        rail: Rail {
+            backgrounds: (
+                palette.text.scale_alpha(alpha).into(),
+                palette.text.scale_alpha(alpha * 0.25).into(),
+            ),
+            width: 4.0,
+            border: Border {
+                radius: 0.0.into(),
+                width: 0.0,
+                color: Color::TRANSPARENT,
+            },
+        },
+        handle: SliderHandle {
+            shape: HandleShape::Rectangle {
+                width: SCRUBBER as u16,
+                border_radius: 0.0.into(),
+            },
+            background: palette.text.scale_alpha(alpha).into(),
+            border_width: 0.0,
+            border_color: Color::TRANSPARENT,
+        },
+    }
+}
+
+/// Format a duration in seconds as `m:ss` (or `h:mm:ss` past an hour).
+fn format_time(seconds: f32) -> String {
+    let total = seconds.max(0.0).round() as u64;
+    let (hours, minutes, secs) = (total / 3600, (total % 3600) / 60, total % 60);
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{secs:02}")
+    } else {
+        format!("{minutes}:{secs:02}")
+    }
 }
 
 /// The transport controls, centred along the bottom of the player.
@@ -524,7 +802,7 @@ fn tag_width(label: &str) -> u32 {
 
 /// The input region the surface should expose for the current state.
 fn desired_region(state: &MediaApp) -> Region {
-    if !state.shown() {
+    if !state.wanted() {
         return Region::Empty;
     }
     if state.expanded {
@@ -553,17 +831,19 @@ fn update_art(state: &mut MediaApp) {
         return;
     }
     state.art_url = state.state.art_url.clone();
-    state.art = state.art_url.as_deref().and_then(load_art);
+    let art = state.art_url.as_deref().and_then(load_art);
+    state.art = art.as_ref().map(|(blurred, _)| blurred.clone());
+    state.art_thumb = art.map(|(_, sharp)| sharp);
     if state.art.is_some() {
         state.settling = SETTLE_TICKS;
     }
 }
 
-/// Decode a local cover-art URL into a blurred, iced-ready image handle.
+/// Decode a local cover-art URL into a blurred background and a sharp thumbnail.
 ///
 /// Only `file://` URLs are read; remote ones are ignored and fall back to the
 /// solid background.
-fn load_art(url: &str) -> Option<image_widget::Handle> {
+fn load_art(url: &str) -> Option<(image_widget::Handle, image_widget::Handle)> {
     let path = art_path(url)?;
     let mut decoded = image::ImageReader::open(&path)
         .ok()?
@@ -576,13 +856,14 @@ fn load_art(url: &str) -> Option<image_widget::Handle> {
         decoded = decoded.resize(ART_MAX, ART_MAX, image::imageops::FilterType::Lanczos3);
     }
 
+    let rgba = decoded.to_rgba8();
+    let sharp = image_widget::Handle::from_rgba(rgba.width(), rgba.height(), rgba.into_raw());
+
     let blurred = image::imageops::fast_blur(&decoded.to_rgba8(), ART_BLUR);
     let (width, height) = blurred.dimensions();
-    Some(image_widget::Handle::from_rgba(
-        width,
-        height,
-        blurred.into_raw(),
-    ))
+    let soft = image_widget::Handle::from_rgba(width, height, blurred.into_raw());
+
+    Some((soft, sharp))
 }
 
 /// Turn a `file://` URL into a filesystem path, undoing percent-encoding.

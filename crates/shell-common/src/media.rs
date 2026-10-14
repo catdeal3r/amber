@@ -15,7 +15,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use zbus::zvariant::OwnedValue;
+use zbus::zvariant::{ObjectPath, OwnedValue};
 
 /// How often the background thread refreshes the snapshot.
 const POLL: Duration = Duration::from_millis(500);
@@ -104,6 +104,8 @@ pub enum Command {
     SetShuffle(bool),
     /// Advance the loop mode (`None -> Playlist -> Track -> None`).
     CycleLoop,
+    /// Move the playhead to an absolute position.
+    Seek(Duration),
 }
 
 /// A snapshot of the active media player.
@@ -123,6 +125,12 @@ pub struct MediaState {
     pub shuffle: Option<bool>,
     /// Loop mode, or `None` when the player does not expose it.
     pub loop_status: Option<LoopStatus>,
+    /// Playhead position, or `None` when the player does not expose it.
+    pub position: Option<Duration>,
+    /// Track length, or `None` when the metadata does not carry it.
+    pub length: Option<Duration>,
+    /// Whether the player supports seeking, or `None` when it does not say.
+    pub can_seek: Option<bool>,
     /// Whether the player can skip forward.
     pub can_go_next: bool,
     /// Whether the player can skip back.
@@ -217,9 +225,17 @@ trait MprisPlayer {
     #[zbus(property(emits_changed_signal = "false"))]
     fn can_go_previous(&self) -> zbus::Result<bool>;
 
+    #[zbus(property(emits_changed_signal = "false"))]
+    fn position(&self) -> zbus::Result<i64>;
+
+    #[zbus(property(emits_changed_signal = "false"))]
+    fn can_seek(&self) -> zbus::Result<bool>;
+
     fn play_pause(&self) -> zbus::Result<()>;
     fn next(&self) -> zbus::Result<()>;
     fn previous(&self) -> zbus::Result<()>;
+    fn seek(&self, offset: i64) -> zbus::Result<()>;
+    fn set_position(&self, track_id: ObjectPath<'_>, position: i64) -> zbus::Result<()>;
 }
 
 /// Refresh the snapshot forever, applying queued commands as they arrive.
@@ -291,6 +307,23 @@ fn apply(connection: &zbus::blocking::Connection, active: Option<&str>, command:
                 let _ = proxy.set_loop_status(mode.next().as_str().to_string());
             }
         }
+        Command::Seek(target) => {
+            // Prefer `SetPosition`, which seeks to an exact position. Some
+            // players (Chromium) clamp the relative `Seek` offset to a few
+            // seconds, so it can't reach an arbitrary target. Fall back to a
+            // relative seek only when the track has no id to address.
+            let micros = target.as_micros() as i64;
+            match proxy.metadata().ok().as_ref().and_then(prop_track_id) {
+                Some(track_id) => {
+                    let _ = proxy.set_position(track_id, micros);
+                }
+                None => {
+                    if let Ok(current) = proxy.position() {
+                        let _ = proxy.seek(micros - current);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -349,9 +382,20 @@ fn read_player(connection: &zbus::blocking::Connection, name: &str) -> Option<Me
             .and_then(|meta| prop_string(meta, "mpris:artUrl")),
         shuffle: proxy.shuffle().ok(),
         loop_status: proxy.loop_status().ok().and_then(|s| LoopStatus::parse(&s)),
+        position: proxy.position().ok().and_then(micros),
+        length: metadata
+            .as_ref()
+            .and_then(|meta| prop_i64(meta, "mpris:length"))
+            .and_then(micros),
+        can_seek: proxy.can_seek().ok(),
         can_go_next: proxy.can_go_next().unwrap_or(false),
         can_go_previous: proxy.can_go_previous().unwrap_or(false),
     })
+}
+
+/// Turn a non-negative MPRIS microsecond count into a [`Duration`].
+fn micros(value: i64) -> Option<Duration> {
+    (value >= 0).then(|| Duration::from_micros(value as u64))
 }
 
 /// Read a string metadata value, treating an empty string as absent.
@@ -374,6 +418,16 @@ fn prop_artist(metadata: &HashMap<String, OwnedValue>, key: &str) -> Option<Stri
     } else {
         Some(artists.join(", "))
     }
+}
+
+/// Read an integer metadata value (MPRIS uses these for microsecond lengths).
+fn prop_i64(metadata: &HashMap<String, OwnedValue>, key: &str) -> Option<i64> {
+    metadata.get(key)?.try_into().ok()
+}
+
+/// Read the `mpris:trackid` object path, which `SetPosition` needs.
+fn prop_track_id(metadata: &HashMap<String, OwnedValue>) -> Option<ObjectPath<'_>> {
+    metadata.get("mpris:trackid")?.downcast_ref().ok()
 }
 
 #[cfg(test)]

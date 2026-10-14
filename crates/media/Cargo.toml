@@ -13,3 +13,4 @@ shell-common = { path = "../shell-common" }
 iced = { workspace = true }
 iced_layershell = { workspace = true }
 image = { workspace = true }
+tokio = { workspace = true }

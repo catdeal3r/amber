@@ -336,17 +336,18 @@ focused window is fullscreen — so it only appears when there is media to show 
 nothing is covering the screen.
 
 ```
-collapsed:            expanded:
-┌────────────────┐    ┌──────────────────────────────────────┐
-│ ♪ Artist - Title│    │  (cover art, blurred + darkened)     │
-└────────────────┘    │  Title                               │
-                      │  Artist                              │
-                      │       ↺  ⏮  ⏯  ⏭  ↻                │
-                      └──────────────────────────────────────┘
+collapsed:              expanded:
+┌────────────────┐      ┌──────────────────────────────────────┐
+│ ♪ Artist - Title│      │ ┌────┐  Title                         │
+└────────────────┘      │ │ ▨▨ │  Artist                        │
+                        │ └────┘                                │
+                        │  1:02  ▬▬▬▬●────────  4:07            │
+                        │        ↺  ⏮  ⏯  ⏭  ↻               │
+                        └──────────────────────────────────────┘
 ```
 
 - **Surface:** a single top-anchored `Layer::Overlay` surface sized to the
-  expanded player (`420×150`), `exclusive_zone: 0`, `KeyboardInteractivity::None`
+  expanded player (`420×196`), `exclusive_zone: 0`, `KeyboardInteractivity::None`
   and `events_transparent`, placed just under the bar (`GAP` 4; a layer surface's
   origin already sits below the bar's exclusive zone). Because the surface is a
   fixed size but the card is not, its **input region** is carved out per state via
@@ -356,10 +357,22 @@ collapsed:            expanded:
 - **Collapsed:** a `"{artist} - {title}"` tag — a music-note icon and a
   single-line monospace label, ellipsized to fit (`iced` has no built-in
   ellipsis).
-- **Expanded:** the cover art fills the card as a background (`ContentFit::Cover`,
-  solid black when there is none), Gaussian-blurred and darkened by a scrim so the
-  title and artist stay legible; the transport controls sit centred along the
-  bottom.
+- **Expanded:** a row pairing a square cover thumbnail with the track text beside
+  it (title over artist), then the timeline, then the transport controls centred
+  along the bottom. The blurred cover art also fills the card as a background
+  (`ContentFit::Cover`, solid black when there is none) under a darkening scrim,
+  so the text stays legible.
+- **Timeline:** elapsed time, an interactive scrubber and the total length. The
+  playhead is extrapolated from the last snapshot — anchored to the instant it was
+  read and advanced while playing — so it ticks smoothly between the watcher's
+  `500ms` polls. Dragging previews a position and releasing sends `Command::Seek`.
+- **Seeking:** seeks go out as MPRIS `SetPosition`, which lands on an exact
+  position; some players (Chromium) clamp the relative `Seek` offset to a few
+  seconds and so can't reach an arbitrary target (a relative `Seek` is used only
+  when the track carries no id to address). After a seek the card holds the
+  playhead at the target and ignores snapshot reads for `800ms`, so the stale
+  position that arrives before the host has applied the seek doesn't snap the bar
+  back.
 - **Controls:** shuffle and loop flank the transport (only when the player
   reports them), with previous/next around a play/pause toggle. A disabled
   control is dimmed to `muted` and inert; active shuffle/loop are `accent`. Each
@@ -371,28 +384,35 @@ collapsed:            expanded:
   the card grows. It reuses the launcher's `iced::Animation<bool>` + `16ms` tick
   pattern. The input region follows the **target** state, so the full card is
   interactive the moment the pointer enters, not only once the animation settles.
+  Media appearing or going away plays a second, independent **presence** slide:
+  the card slides down from under the bar (clipped in) and back up, over the same
+  `220ms`.
 - **Cover art:** the MPRIS `mpris:artUrl` is re-read when it changes; `file://`
-  URLs are percent-decoded, decoded with `image`, downscaled to at most `512px` a
-  side, blurred (`fast_blur`, σ `5`) and uploaded as raw RGBA
-  (`Handle::from_rgba`). Chromium's art files carry no extension, so the format is
-  sniffed from the bytes. While iced's asynchronous image upload settles, the app
-  keeps forcing redraws for a short burst — the same trick as the wallpaper.
+  URLs are percent-decoded, decoded with `image` and downscaled to at most `512px`
+  a side. It yields two textures: the Gaussian-blurred (`fast_blur`, σ `5`) wash
+  drawn as the card background, and a sharp thumbnail drawn beside the text (a
+  flat `field` square when there is none). Chromium's art files carry no
+  extension, so the format is sniffed from the bytes. While iced's asynchronous
+  image upload settles, the app keeps forcing redraws for a short burst — the same
+  trick as the wallpaper.
 - **Fullscreen:** niri's IPC exposes no fullscreen flag, so
   `shell_common::niri::is_fullscreen()` compares the focused window's size against
   the focused output's logical size — a fullscreen window fills the output exactly,
   while tiled and floating windows are inset by the layout gaps. The card is
   hidden (and its input region emptied) whenever that holds, so it never floats
-  over a fullscreen video. The check only runs while there is media to show; the
-  card collapses while hidden so it doesn't pop back expanded.
+  over a fullscreen video. The check only runs while there is media to show and
+  the card is at rest (the fast animation frames must stay cheap); the card
+  collapses while hidden so it doesn't pop back expanded.
 - **Watcher** (`crates/shell-common/src/media.rs`): a zbus MPRIS client that
   mirrors the active player into a `MediaState` (`title`, `artist`, `art_url`,
-  `playback`, `shuffle`, `loop_status`, `can_go_next`, `can_go_previous`,
-  `has_player`). Like the tray host it runs on its own thread with zbus's blocking
-  API, so the UI never waits on the bus: the UI polls `Media::state()` and sends
-  `Media::command(Command)` over a channel. Commands are `PlayPause`, `Next`,
-  `Previous`, `SetShuffle(bool)` and `CycleLoop` (which steps
-  `None → Playlist → Track → None`). `MediaState::visible()` is true whenever a
-  track has a title and the player isn't stopped.
+  `playback`, `shuffle`, `loop_status`, `position`, `length`, `can_seek`,
+  `can_go_next`, `can_go_previous`, `has_player`). Like the tray host it runs on
+  its own thread with zbus's blocking API, so the UI never waits on the bus: the
+  UI polls `Media::state()` and sends `Media::command(Command)` over a channel.
+  Commands are `PlayPause`, `Next`, `Previous`, `SetShuffle(bool)`, `CycleLoop`
+  (which steps `None → Playlist → Track → None`) and `Seek(Duration)`.
+  `MediaState::visible()` is true whenever a track has a title and the player
+  isn't stopped.
 
 ## Planned surfaces (spec captured, not built)
 

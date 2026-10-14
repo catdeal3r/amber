@@ -1,24 +1,15 @@
 # TODOs in order of importance
 - [ ] Lockscreen and swayidle integration
-  - [x] Time
-  - [x] Darken + blured background of wallpaper
   - [ ] Media Player
-  - [x] Animations
-  - [x] Swayidle lock on return from sleep
 - [ ] Brightness and volume popups
 - [ ] Add a material-symbols dot between the wifi/bluetooth icons and tray icons
 - [ ] Battery menu
   - [ ] Switch between performance, balanced, and powersave with powerprofilesctl
   - [ ] Show percentage and progress bar
   - [ ] Show battery health and cycles
-- [x] Hide media tooltip on fullscreen
-- [x] Media player that appears on hover of the workspace widget
-  - [x] Title + artist
-  - [x] Cover art as background (just plain black if no cover art)
-  - [x] Darken + blur cover art
-  - [x] Animated grow/shrink transition between the tag and the player
-  - [x] Play/pause, next, previous controls
-  - [x] Shuffle/loop controls if supported by player
+- [ ] Media player that appears on hover of the workspace widget
+  - [ ] Shuffle/loop controls if supported by player
+- [ ] Change the tooltip slide animations to be the window moving and not just resizing
 - [ ] Notifications
   - [ ] Basic title and body
   - [ ] Title wraps
