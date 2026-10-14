@@ -3234,6 +3234,7 @@ dependencies = [
  "iced_core",
  "image",
  "serde",
+ "serde_json",
  "toml",
  "zbus",
 ]

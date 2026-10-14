@@ -331,8 +331,9 @@ IPC surface to drive: a trigger simply spawns the binary.
 ## The media player (`amber-media`)
 
 A small now-playing card that hangs just below the centred workspace indicator.
-It paints nothing at all while no track is loaded, so it only appears when there
-is media to show.
+It paints nothing at all while no track is loaded — and stays hidden while the
+focused window is fullscreen — so it only appears when there is media to show and
+nothing is covering the screen.
 
 ```
 collapsed:            expanded:
@@ -372,11 +373,17 @@ collapsed:            expanded:
   interactive the moment the pointer enters, not only once the animation settles.
 - **Cover art:** the MPRIS `mpris:artUrl` is re-read when it changes; `file://`
   URLs are percent-decoded, decoded with `image`, downscaled to at most `512px` a
-  side, blurred (`fast_blur`, σ `8`) and uploaded as raw RGBA
+  side, blurred (`fast_blur`, σ `5`) and uploaded as raw RGBA
   (`Handle::from_rgba`). Chromium's art files carry no extension, so the format is
   sniffed from the bytes. While iced's asynchronous image upload settles, the app
   keeps forcing redraws for a short burst — the same trick as the wallpaper.
-
+- **Fullscreen:** niri's IPC exposes no fullscreen flag, so
+  `shell_common::niri::is_fullscreen()` compares the focused window's size against
+  the focused output's logical size — a fullscreen window fills the output exactly,
+  while tiled and floating windows are inset by the layout gaps. The card is
+  hidden (and its input region emptied) whenever that holds, so it never floats
+  over a fullscreen video. The check only runs while there is media to show; the
+  card collapses while hidden so it doesn't pop back expanded.
 - **Watcher** (`crates/shell-common/src/media.rs`): a zbus MPRIS client that
   mirrors the active player into a `MediaState` (`title`, `artist`, `art_url`,
   `playback`, `shuffle`, `loop_status`, `can_go_next`, `can_go_previous`,

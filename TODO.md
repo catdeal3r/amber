@@ -11,7 +11,7 @@
   - [ ] Switch between performance, balanced, and powersave with powerprofilesctl
   - [ ] Show percentage and progress bar
   - [ ] Show battery health and cycles
-- [ ] Hide media tooltip on fullscreen
+- [x] Hide media tooltip on fullscreen
 - [x] Media player that appears on hover of the workspace widget
   - [x] Title + artist
   - [x] Cover art as background (just plain black if no cover art)

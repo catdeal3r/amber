@@ -81,7 +81,7 @@ const ART_MAX: u32 = 512;
 
 /// Gaussian blur sigma applied to the cover art, in the (downscaled) art's
 /// pixels. The art is drawn behind the text, so this softens it into a wash.
-const ART_BLUR: f32 = 10.0;
+const ART_BLUR: f32 = 5.0;
 
 /// Opacity of the black scrim laid over the cover art, to keep the text legible.
 const SCRIM_ALPHA: f32 = 0.55;
@@ -146,6 +146,8 @@ struct MediaApp {
     art: Option<image_widget::Handle>,
     /// Redraws still owed while the cover-art upload settles.
     settling: u32,
+    /// Whether the focused window is fullscreen, in which case nothing is shown.
+    fullscreen: bool,
     /// The input region last applied to the surface.
     region: Region,
 }
@@ -164,8 +166,15 @@ impl MediaApp {
             art_url: None,
             art: None,
             settling: 0,
+            fullscreen: false,
             region: Region::Empty,
         }
+    }
+
+    /// Whether the card is drawn at all: there is media to show and the focused
+    /// window is not fullscreen.
+    fn shown(&self) -> bool {
+        self.state.visible() && !self.fullscreen
     }
 }
 
@@ -175,6 +184,14 @@ fn update(state: &mut MediaApp, message: Message) -> Task<Message> {
             state.now = now;
             state.state = state.media.state();
             state.settling = state.settling.saturating_sub(1);
+            // Only ask niri while there is something to hide; a fullscreen
+            // check costs two `niri msg` invocations.
+            state.fullscreen = state.state.visible() && shell_common::niri::is_fullscreen();
+            // Collapse while hidden so the card doesn't reappear expanded.
+            if !state.shown() && state.expanded {
+                state.expanded = false;
+                state.progress.go_mut(false, state.now);
+            }
             update_art(state);
         }
         Message::HoverEnter => {
@@ -223,7 +240,7 @@ fn subscription(state: &MediaApp) -> Subscription<Message> {
 }
 
 fn view(state: &MediaApp) -> Element<'_, Message> {
-    if !state.state.visible() {
+    if !state.shown() {
         return Space::new().width(Length::Fill).height(Length::Fill).into();
     }
 
@@ -507,7 +524,7 @@ fn tag_width(label: &str) -> u32 {
 
 /// The input region the surface should expose for the current state.
 fn desired_region(state: &MediaApp) -> Region {
-    if !state.state.visible() {
+    if !state.shown() {
         return Region::Empty;
     }
     if state.expanded {
