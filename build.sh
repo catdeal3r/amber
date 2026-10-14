@@ -28,13 +28,14 @@ fi
 cd "$(dirname -- "$(readlink -f -- "$0")")"
 
 # Binary name -> cargo package.
-all_bins=(amber-panel amber-wallpaper amber-launcher amber-notifd amber-locker)
+all_bins=(amber-panel amber-wallpaper amber-launcher amber-notifd amber-locker amber-media)
 declare -A package_of=(
     ["amber-panel"]=panel
     ["amber-wallpaper"]=wallpaper
     ["amber-launcher"]=launcher
     ["amber-notifd"]=notifd
     ["amber-locker"]=locker
+    ["amber-media"]=media
 )
 
 usage() {

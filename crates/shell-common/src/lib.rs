@@ -7,6 +7,7 @@ pub mod assets;
 pub mod battery;
 pub mod bluetooth;
 pub mod config;
+pub mod media;
 pub mod theme;
 pub mod tray;
 pub mod wifi;

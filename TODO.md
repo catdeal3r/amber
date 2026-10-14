@@ -11,11 +11,14 @@
   - [ ] Switch between performance, balanced, and powersave with powerprofilesctl
   - [ ] Show percentage and progress bar
   - [ ] Show battery health and cycles
-- [ ] Media player that appears on hover of the workspace widget
-  - [ ] Title + artist
-  - [ ] Cover art as background (just plain black if no cover art)
-  - [ ] Play/pause, next, previous controls
-  - [ ] Shuffle/loop controls if supported by player
+- [ ] Hide media tooltip on fullscreen
+- [x] Media player that appears on hover of the workspace widget
+  - [x] Title + artist
+  - [x] Cover art as background (just plain black if no cover art)
+  - [x] Darken + blur cover art
+  - [x] Animated grow/shrink transition between the tag and the player
+  - [x] Play/pause, next, previous controls
+  - [x] Shuffle/loop controls if supported by player
 - [ ] Notifications
   - [ ] Basic title and body
   - [ ] Title wraps

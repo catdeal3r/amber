@@ -9,16 +9,18 @@ running on top of niri, written in Rust with [iced] through
 
 ## Components
 
-| crate                  | binary           | status      |
-| ---------------------- | ---------------- | ----------- |
-| `crates/shell-common`  | —                | done        |
-| `crates/panel`         | `amber-panel`    | done (v1)   |
-| `crates/launcher`      | `amber-launcher` | done (v1)   |
-| `crates/notifd`        | `amber-notifd`   | stub        |
-| `crates/locker`        | `amber-locker`   | done (v1)   |
+| crate                  | binary             | status      |
+| ---------------------- | ------------------ | ----------- |
+| `crates/shell-common`  | —                  | done        |
+| `crates/panel`         | `amber-panel`      | done (v1)   |
+| `crates/launcher`      | `amber-launcher`   | done (v1)   |
+| `crates/wallpaper`     | `amber-wallpaper`  | done        |
+| `crates/media`         | `amber-media`      | done (v1)   |
+| `crates/notifd`        | `amber-notifd`     | stub        |
+| `crates/locker`        | `amber-locker`     | done (v1)   |
 
-The panel, the launcher and the locker are implemented; the rest are
-placeholders so the workspace resolves.
+The panel, the launcher, the wallpaper, the media player and the locker are
+implemented; the rest are placeholders so the workspace resolves.
 
 ## Design language — `fuji`
 
@@ -326,6 +328,65 @@ IPC surface to drive: a trigger simply spawns the binary.
   `linux-pam`) avoids the `pam-sys`/bindgen dependency; the PAM service defaults
   to `login` and is configurable.
 
+## The media player (`amber-media`)
+
+A small now-playing card that hangs just below the centred workspace indicator.
+It paints nothing at all while no track is loaded, so it only appears when there
+is media to show.
+
+```
+collapsed:            expanded:
+┌────────────────┐    ┌──────────────────────────────────────┐
+│ ♪ Artist - Title│    │  (cover art, blurred + darkened)     │
+└────────────────┘    │  Title                               │
+                      │  Artist                              │
+                      │       ↺  ⏮  ⏯  ⏭  ↻                │
+                      └──────────────────────────────────────┘
+```
+
+- **Surface:** a single top-anchored `Layer::Overlay` surface sized to the
+  expanded player (`420×150`), `exclusive_zone: 0`, `KeyboardInteractivity::None`
+  and `events_transparent`, placed just under the bar (`GAP` 4; a layer surface's
+  origin already sits below the bar's exclusive zone). Because the surface is a
+  fixed size but the card is not, its **input region** is carved out per state via
+  a `SetInputRegion` layer-shell action: nothing when hidden, just the tag
+  (`~417×34`) while collapsed, the whole card while expanded. Clicks outside the
+  card pass through to the desktop.
+- **Collapsed:** a `"{artist} - {title}"` tag — a music-note icon and a
+  single-line monospace label, ellipsized to fit (`iced` has no built-in
+  ellipsis).
+- **Expanded:** the cover art fills the card as a background (`ContentFit::Cover`,
+  solid black when there is none), Gaussian-blurred and darkened by a scrim so the
+  title and artist stay legible; the transport controls sit centred along the
+  bottom.
+- **Controls:** shuffle and loop flank the transport (only when the player
+  reports them), with previous/next around a play/pause toggle. A disabled
+  control is dimmed to `muted` and inert; active shuffle/loop are `accent`. Each
+  click sends a `shell_common::media::Command`.
+- **Transition:** hovering grows the card from the tag to the player over `220ms`
+  (`EaseOutCubic`). The card's width and height interpolate between the two ends,
+  the tag and player contents cross-fade through the middle of the transition,
+  and a `bg` wash over the art fades out — so the cover art appears to *emerge* as
+  the card grows. It reuses the launcher's `iced::Animation<bool>` + `16ms` tick
+  pattern. The input region follows the **target** state, so the full card is
+  interactive the moment the pointer enters, not only once the animation settles.
+- **Cover art:** the MPRIS `mpris:artUrl` is re-read when it changes; `file://`
+  URLs are percent-decoded, decoded with `image`, downscaled to at most `512px` a
+  side, blurred (`fast_blur`, σ `8`) and uploaded as raw RGBA
+  (`Handle::from_rgba`). Chromium's art files carry no extension, so the format is
+  sniffed from the bytes. While iced's asynchronous image upload settles, the app
+  keeps forcing redraws for a short burst — the same trick as the wallpaper.
+
+- **Watcher** (`crates/shell-common/src/media.rs`): a zbus MPRIS client that
+  mirrors the active player into a `MediaState` (`title`, `artist`, `art_url`,
+  `playback`, `shuffle`, `loop_status`, `can_go_next`, `can_go_previous`,
+  `has_player`). Like the tray host it runs on its own thread with zbus's blocking
+  API, so the UI never waits on the bus: the UI polls `Media::state()` and sends
+  `Media::command(Command)` over a channel. Commands are `PlayPause`, `Next`,
+  `Previous`, `SetShuffle(bool)` and `CycleLoop` (which steps
+  `None → Playlist → Track → None`). `MediaState::visible()` is true whenever a
+  track has a title and the player isn't stopped.
+
 ## Planned surfaces (spec captured, not built)
 
 - **Notifications** (`400px` toasts, `surface`, 10px gaps): 4s timeout with a
@@ -388,6 +449,7 @@ the release binaries directly:
 ```kdl
 spawn-at-startup "sh" "-c" "/home/catdealer/amber/dist/amber-panel"
 spawn-at-startup "sh" "-c" "/home/catdealer/amber/dist/amber-wallpaper"
+spawn-at-startup "sh" "-c" "/home/catdealer/amber/dist/amber-media"
 ```
 
 The launcher is on demand rather than always-on, so bind it to a key instead:
@@ -413,8 +475,9 @@ iterating on one component, `./build.sh amber-panel` (etc.) is usually enough.
 - `iced 0.14` + `iced_layershell 0.19.1` (lockstep). iced features:
   `image-without-codecs` (image widget), `svg`, `tokio` (the thread-pool backend
   has an empty `time` module, so `time::every` needs the tokio backend).
-- `image` is depended on directly with only the `png` codec, to avoid pulling the
-  AVIF/`rav1e` codecs through iced's full `image` feature.
+- `image` is depended on directly with only the `png` and `jpeg` codecs — enough
+  for bundled assets and cover art — to avoid pulling the AVIF/`rav1e` codecs
+  through iced's full `image` feature.
 - `winit-core`/`winit-common` are pinned to `0.31.0-beta.2` in `Cargo.lock`:
   `iced_exdevtools 0.19.1` (a mandatory dep of iced_layershell) does not compile
   against `beta.3`, which added `#[non_exhaustive]` to `NativeKeyCode`.

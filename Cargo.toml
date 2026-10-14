@@ -6,6 +6,7 @@ members = [
     "crates/launcher",
     "crates/notifd",
     "crates/locker",
+    "crates/media",
     "crates/wallpaper",
 ]
 
