@@ -244,12 +244,16 @@ impl MediaApp {
     /// The playhead to draw: the extrapolated position while playing, else the
     /// last snapshot position, clamped to the track length.
     fn playhead(&self) -> Duration {
-        let position = if self.state.playback == Playback::Playing {
+        let position = if self
+            .state
+            .active_player()
+            .is_some_and(|p| p.playback == Playback::Playing)
+        {
             self.position_base + self.now.saturating_duration_since(self.position_base_at)
         } else {
             self.position_base
         };
-        match self.state.length {
+        match self.state.active_player().and_then(|p| p.length) {
             Some(length) => position.min(length),
             None => position,
         }
@@ -271,14 +275,14 @@ fn update(state: &mut MediaApp, message: Message) -> Task<Message> {
             // extrapolates smoothly between the watcher's coarse polls. Ignore
             // reads that race a seek we just issued — the host may not have
             // applied it yet, and trusting the stale value snaps the bar back.
-            if state.seen_position != state.state.position {
+            if state.seen_position != state.state.active_player().and_then(|p| p.position) {
                 let settling = state
                     .seek_pending
                     .is_some_and(|at| now.saturating_duration_since(at) < SEEK_SETTLE);
                 if !settling {
                     state.seek_pending = None;
-                    state.seen_position = state.state.position;
-                    if let Some(position) = state.state.position {
+                    state.seen_position = state.state.active_player().and_then(|p| p.position);
+                    if let Some(position) = state.state.active_player().and_then(|p| p.position) {
                         state.position_base = position;
                         state.position_base_at = now;
                     }
@@ -331,7 +335,7 @@ fn update(state: &mut MediaApp, message: Message) -> Task<Message> {
         Message::Next => state.media.command(Command::Next),
         Message::Previous => state.media.command(Command::Previous),
         Message::ToggleShuffle => {
-            if let Some(on) = state.state.shuffle {
+            if let Some(on) = state.state.active_player().and_then(|p| p.shuffle) {
                 state.media.command(Command::SetShuffle(!on));
             }
         }
@@ -375,8 +379,11 @@ fn subscription(state: &MediaApp) -> Subscription<Message> {
         } else if state.settling > 0 {
             Duration::from_millis(250)
         } else if state.expanded
-            && state.state.playback == Playback::Playing
-            && state.state.length.is_some()
+            && state
+                .state
+                .active_player()
+                .is_some_and(|p| p.playback == Playback::Playing)
+            && state.state.active_player().and_then(|p| p.length).is_some()
         {
             SCRUB
         } else {
@@ -522,11 +529,19 @@ fn track_text<'a>(state: &'a MediaApp, alpha: f32) -> Element<'a, Message> {
     let text_width = PLAYER_W as f32 - 2.0 * PLAYER_PADDING - COVER - 12.0;
 
     let title = ellipsize(
-        state.state.title.as_deref().unwrap_or_default(),
+        state
+            .state
+            .active_player()
+            .and_then(|p| p.title.as_deref())
+            .unwrap_or_default(),
         cells_for(text_width, TITLE_SIZE),
     );
     let artist = ellipsize(
-        state.state.artist.as_deref().unwrap_or_default(),
+        state
+            .state
+            .active_player()
+            .and_then(|p| p.artist.as_deref())
+            .unwrap_or_default(),
         cells_for(text_width, ARTIST_SIZE),
     );
 
@@ -575,7 +590,7 @@ fn timeline<'a>(state: &'a MediaApp, alpha: f32) -> Element<'a, Message> {
     let palette = state.theme.palette;
     let fonts = state.theme.fonts;
 
-    let Some(length) = state.state.length else {
+    let Some(length) = state.state.active_player().and_then(|p| p.length) else {
         return Space::new().height(Length::Fixed(0.0)).into();
     };
     let total = length.as_secs_f32();
@@ -664,22 +679,28 @@ fn controls<'a>(state: &'a MediaApp, alpha: f32) -> Element<'a, Message> {
 
     let mut items: Vec<Element<'a, Message>> = Vec::new();
 
-    if let Some(shuffle) = state.state.shuffle {
-        let color = if shuffle {
+    // Shuffle and loop are always shown so the controls read the same for every
+    // player; when the player doesn't report them (e.g. Chromium's MPRIS) they
+    // are dimmed and inert.
+    let shuffle = state.state.active_player().and_then(|p| p.shuffle);
+    items.push(control(
+        fonts.icon,
+        SHUFFLE,
+        20.0,
+        if shuffle == Some(true) {
             palette.accent
         } else {
             palette.muted
-        };
-        items.push(control(
-            fonts.icon,
-            SHUFFLE,
-            20.0,
-            color.scale_alpha(alpha),
-            Some(Message::ToggleShuffle),
-        ));
-    }
+        }
+        .scale_alpha(alpha),
+        shuffle.is_some().then_some(Message::ToggleShuffle),
+    ));
 
-    let previous = state.state.can_go_previous.then_some(Message::Previous);
+    let previous = state
+        .state
+        .active_player()
+        .is_some_and(|p| p.can_go_previous)
+        .then_some(Message::Previous);
     items.push(control(
         fonts.icon,
         SKIP_PREVIOUS,
@@ -688,16 +709,23 @@ fn controls<'a>(state: &'a MediaApp, alpha: f32) -> Element<'a, Message> {
         previous,
     ));
 
-    let playing = state.state.playback == Playback::Playing;
+    let playing = state
+        .state
+        .active_player()
+        .is_some_and(|p| p.playback == Playback::Playing);
     items.push(control(
         fonts.icon,
         if playing { PAUSE } else { PLAY },
         22.0,
         palette.text.scale_alpha(alpha),
-        state.state.has_player.then_some(Message::PlayPause),
+        state.state.has_player().then_some(Message::PlayPause),
     ));
 
-    let next = state.state.can_go_next.then_some(Message::Next);
+    let next = state
+        .state
+        .active_player()
+        .is_some_and(|p| p.can_go_next)
+        .then_some(Message::Next);
     items.push(control(
         fonts.icon,
         SKIP_NEXT,
@@ -706,23 +734,22 @@ fn controls<'a>(state: &'a MediaApp, alpha: f32) -> Element<'a, Message> {
         next,
     ));
 
-    if let Some(loop_status) = state.state.loop_status {
-        let glyph = match loop_status {
-            LoopStatus::Track => REPEAT_ONE,
-            _ => REPEAT,
-        };
-        let color = match loop_status {
-            LoopStatus::None => palette.muted,
-            _ => palette.accent,
-        };
-        items.push(control(
-            fonts.icon,
-            glyph,
-            20.0,
-            color.scale_alpha(alpha),
-            Some(Message::CycleLoop),
-        ));
-    }
+    let loop_status = state.state.active_player().and_then(|p| p.loop_status);
+    let glyph = match loop_status {
+        Some(LoopStatus::Track) => REPEAT_ONE,
+        _ => REPEAT,
+    };
+    let color = match loop_status {
+        Some(mode) if mode != LoopStatus::None => palette.accent,
+        _ => palette.muted,
+    };
+    items.push(control(
+        fonts.icon,
+        glyph,
+        20.0,
+        color.scale_alpha(alpha),
+        loop_status.is_some().then_some(Message::CycleLoop),
+    ));
 
     container(row(items).spacing(14.0).align_y(Alignment::Center))
         .width(Length::Fill)
@@ -827,10 +854,16 @@ fn region_callback(region: Region) -> ActionCallback {
 
 /// Reload the cover art when the track changes.
 fn update_art(state: &mut MediaApp) {
-    if state.art_url == state.state.art_url {
+    if state.art_url
+        == state
+            .state
+            .active_player()
+            .and_then(|p| p.art_url.as_deref())
+            .map(|s| s.to_string())
+    {
         return;
     }
-    state.art_url = state.state.art_url.clone();
+    state.art_url = state.state.active_player().and_then(|p| p.art_url.clone());
     let art = state.art_url.as_deref().and_then(load_art);
     state.art = art.as_ref().map(|(blurred, _)| blurred.clone());
     state.art_thumb = art.map(|(_, sharp)| sharp);
@@ -904,8 +937,11 @@ fn hex_digit(byte: u8) -> Option<u8> {
 /// The label shown in the tag: `"{artist} - {title}"`, or just the title when
 /// the player reports no artist.
 fn label(state: &MediaState) -> String {
-    let title = state.title.as_deref().unwrap_or_default();
-    match state.artist.as_deref() {
+    let title = state
+        .active_player()
+        .and_then(|p| p.title.as_deref())
+        .unwrap_or_default();
+    match state.active_player().and_then(|p| p.artist.as_deref()) {
         Some(artist) if !artist.is_empty() => format!("{artist} - {title}"),
         _ => title.to_string(),
     }
@@ -969,20 +1005,24 @@ mod tests {
 
     #[test]
     fn label_joins_artist_and_title() {
-        let state = MediaState {
+        let mut state = MediaState::default();
+        state.players.push(shell_common::media::PlayerSnapshot {
             title: Some("Song".into()),
             artist: Some("Band".into()),
-            ..MediaState::default()
-        };
+            ..shell_common::media::PlayerSnapshot::default()
+        });
+        state.active = Some(0);
         assert_eq!(label(&state), "Band - Song");
     }
 
     #[test]
     fn label_falls_back_to_the_title() {
-        let state = MediaState {
+        let mut state = MediaState::default();
+        state.players.push(shell_common::media::PlayerSnapshot {
             title: Some("Song".into()),
-            ..MediaState::default()
-        };
+            ..shell_common::media::PlayerSnapshot::default()
+        });
+        state.active = Some(0);
         assert_eq!(label(&state), "Song");
     }
 

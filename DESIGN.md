@@ -373,10 +373,11 @@ collapsed:              expanded:
   playhead at the target and ignores snapshot reads for `800ms`, so the stale
   position that arrives before the host has applied the seek doesn't snap the bar
   back.
-- **Controls:** shuffle and loop flank the transport (only when the player
-  reports them), with previous/next around a play/pause toggle. A disabled
-  control is dimmed to `muted` and inert; active shuffle/loop are `accent`. Each
-  click sends a `shell_common::media::Command`.
+- **Controls:** shuffle and loop always flank the transport, with previous/next
+  around a play/pause toggle. A control the player can't drive — an unavailable
+  previous/next, or shuffle/loop on a player that doesn't expose them (Chromium's
+  MPRIS reports neither) — is dimmed to `muted` and inert; active shuffle/loop
+  are `accent`. Each click sends a `shell_common::media::Command`.
 - **Transition:** hovering grows the card from the tag to the player over `220ms`
   (`EaseOutCubic`). The card's width and height interpolate between the two ends,
   the tag and player contents cross-fade through the middle of the transition,

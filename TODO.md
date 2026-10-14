@@ -7,9 +7,8 @@
   - [ ] Switch between performance, balanced, and powersave with powerprofilesctl
   - [ ] Show percentage and progress bar
   - [ ] Show battery health and cycles
-- [ ] Media player that appears on hover of the workspace widget
-  - [ ] Shuffle/loop controls if supported by player
-- [ ] Change the tooltip slide animations to be the window moving and not just resizing
+
+- [ ] Media player control multiple players - tooltip just show the playing/most recent one
 - [ ] Notifications
   - [ ] Basic title and body
   - [ ] Title wraps

@@ -106,14 +106,18 @@ pub enum Command {
     CycleLoop,
     /// Move the playhead to an absolute position.
     Seek(Duration),
+    /// Switch to the player at the given index.
+    SetActive(usize),
 }
 
-/// A snapshot of the active media player.
+/// A single media player snapshot.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct MediaState {
-    /// Whether any MPRIS player was reachable.
-    pub has_player: bool,
-    /// What the active player is doing.
+pub struct PlayerSnapshot {
+    /// The player's MPRIS bus name (e.g. `org.mpris.MediaPlayer2.chromium.instance...`).
+    pub bus_name: String,
+    /// A short name to identify the player (identity or bus suffix).
+    pub name: String,
+    /// What the player is doing.
     pub playback: Playback,
     /// Track title (`xesam:title`).
     pub title: Option<String>,
@@ -137,10 +141,35 @@ pub struct MediaState {
     pub can_go_previous: bool,
 }
 
+/// The current state of all players, with the active one selected.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MediaState {
+    /// All known MPRIS players.
+    pub players: Vec<PlayerSnapshot>,
+    /// Index of the active player, or `None` if none.
+    pub active: Option<usize>,
+}
+
 impl MediaState {
+    /// The active player snapshot, if any.
+    pub fn active_player(&self) -> Option<&PlayerSnapshot> {
+        self.active.and_then(|i| self.players.get(i))
+    }
+
+    /// The active player snapshot, if any (mutable).
+    pub fn active_player_mut(&mut self) -> Option<&mut PlayerSnapshot> {
+        self.active.and_then(|i| self.players.get_mut(i))
+    }
+
     /// Whether a track is loaded and worth showing to the user.
     pub fn visible(&self) -> bool {
-        self.title.is_some() && self.playback != Playback::Stopped
+        self.active_player()
+            .is_some_and(|p| p.title.is_some() && p.playback != Playback::Stopped)
+    }
+
+    /// Whether any player exists.
+    pub fn has_player(&self) -> bool {
+        !self.players.is_empty()
     }
 }
 
@@ -190,6 +219,11 @@ impl Media {
     /// the result; it is a no-op when no player is reachable.
     pub fn command(&self, command: Command) {
         let _ = self.commands.send(command);
+    }
+
+    /// Set the active player by index.
+    pub fn set_active(&self, index: usize) {
+        let _ = self.commands.send(Command::SetActive(index));
     }
 }
 
@@ -249,13 +283,29 @@ fn run(shared: Arc<Mutex<MediaState>>, commands: Receiver<Command>) -> zbus::Res
     )?;
 
     loop {
-        let (state, active) = read_active(&connection, &dbus);
-        *shared.lock().expect("media snapshot poisoned") = state;
-
-        // Wake on a command (applying it and re-reading at once) or after the
-        // poll interval, whichever comes first.
+        let (state, _active) = read_active(&connection, &dbus);
+        *shared.lock().expect("media snapshot poisoned") = state.clone();
         match commands.recv_timeout(POLL) {
-            Ok(command) => apply(&connection, active.as_deref(), command),
+            Ok(cmd) => {
+                let mut current = state;
+                match cmd {
+                    Command::SetActive(i) => {
+                        if i < current.players.len() {
+                            current.active = Some(i);
+                        }
+                        *shared.lock().expect("media snapshot poisoned") = current;
+                    }
+                    _ => {
+                        if let Some(name) = current
+                            .active_player()
+                            .map(|p| p.bus_name.clone())
+                            .or_else(|| current.players.first().map(|p| p.bus_name.clone()))
+                        {
+                            apply(&connection, Some(&name), cmd);
+                        }
+                    }
+                }
+            }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
@@ -324,6 +374,9 @@ fn apply(connection: &zbus::blocking::Connection, active: Option<&str>, command:
                 }
             }
         }
+        Command::SetActive(_) => {
+            // SetActive is handled by the watcher state, not sent to D-Bus.
+        }
     }
 }
 
@@ -339,37 +392,54 @@ fn read_active(
         Err(_) => return (MediaState::default(), None),
     };
 
-    let mut fallback: Option<(MediaState, String)> = None;
+    let mut players: Vec<PlayerSnapshot> = Vec::new();
     for name in names {
         if !name.starts_with(BUS_PREFIX) {
             continue;
         }
-        let Some(state) = read_player(connection, &name) else {
-            continue;
-        };
-        if state.playback == Playback::Playing {
-            return (state, Some(name));
-        }
-        if fallback.is_none() {
-            fallback = Some((state, name));
+        if let Some(snapshot) = read_player(connection, &name) {
+            players.push(snapshot);
         }
     }
 
-    match fallback {
-        Some((state, name)) => (state, Some(name)),
-        None => (MediaState::default(), None),
+    if players.is_empty() {
+        return (MediaState::default(), None);
     }
+
+    // Choose active: playing first, else keep previous active if still present, else 0.
+    let mut best_idx = 0;
+    let mut found_playing = false;
+    for (i, p) in players.iter().enumerate() {
+        if p.playback == Playback::Playing {
+            best_idx = i;
+            found_playing = true;
+            break;
+        }
+    }
+    if !found_playing {
+        best_idx = 0;
+    }
+
+    let active_name = players[best_idx].bus_name.clone();
+    (
+        MediaState {
+            players,
+            active: Some(best_idx),
+        },
+        Some(active_name),
+    )
 }
 
-/// Read one player's properties into a snapshot entry.
-fn read_player(connection: &zbus::blocking::Connection, name: &str) -> Option<MediaState> {
+/// Read one player\'s properties into a snapshot entry.
+fn read_player(connection: &zbus::blocking::Connection, name: &str) -> Option<PlayerSnapshot> {
     let proxy = player_proxy(connection, name)?;
 
     let playback = Playback::parse(&proxy.playback_status().ok()?);
     let metadata = proxy.metadata().ok();
 
-    Some(MediaState {
-        has_player: true,
+    Some(PlayerSnapshot {
+        bus_name: name.to_string(),
+        name: player_name(name),
         playback,
         title: metadata
             .as_ref()
@@ -391,6 +461,11 @@ fn read_player(connection: &zbus::blocking::Connection, name: &str) -> Option<Me
         can_go_next: proxy.can_go_next().unwrap_or(false),
         can_go_previous: proxy.can_go_previous().unwrap_or(false),
     })
+}
+
+fn player_name(bus_name: &str) -> String {
+    let rest = bus_name.strip_prefix(BUS_PREFIX).unwrap_or(bus_name);
+    rest.split('.').next().unwrap_or(rest).to_string()
 }
 
 /// Turn a non-negative MPRIS microsecond count into a [`Duration`].
@@ -464,18 +539,22 @@ mod tests {
 
     #[test]
     fn visible_needs_a_title_and_something_but_stopped() {
-        let mut state = MediaState {
+        let mut state = MediaState::default();
+        state.players.push(PlayerSnapshot {
+            bus_name: "org.mpris.MediaPlayer2.test".to_string(),
+            name: "test".to_string(),
             title: Some("Song".into()),
             playback: Playback::Playing,
-            ..MediaState::default()
-        };
+            ..PlayerSnapshot::default()
+        });
+        state.active = Some(0);
         assert!(state.visible());
 
-        state.playback = Playback::Stopped;
+        state.active_player_mut().unwrap().playback = Playback::Stopped;
         assert!(!state.visible());
 
-        state.playback = Playback::Playing;
-        state.title = None;
+        state.active_player_mut().unwrap().playback = Playback::Playing;
+        state.active_player_mut().unwrap().title = None;
         assert!(!state.visible());
     }
 
