@@ -95,10 +95,7 @@ fn active_network() -> Option<(Option<String>, Option<u8>)> {
             continue;
         }
 
-        let ssid = fields
-            .get(1)
-            .filter(|ssid| !ssid.is_empty())
-            .cloned();
+        let ssid = fields.get(1).filter(|ssid| !ssid.is_empty()).cloned();
         let signal = fields.get(2).and_then(|signal| signal.parse().ok());
 
         return Some((ssid, signal));

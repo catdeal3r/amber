@@ -610,8 +610,7 @@ fn parse_node(value: &OwnedValue) -> Option<RawNode> {
     let mut fields = structure.fields().iter();
 
     let id = i32::try_from(OwnedValue::try_from(fields.next()?).ok()?).ok()?;
-    let properties =
-        HashMap::try_from(OwnedValue::try_from(fields.next()?).ok()?).ok()?;
+    let properties = HashMap::try_from(OwnedValue::try_from(fields.next()?).ok()?).ok()?;
     let children = Vec::<OwnedValue>::try_from(OwnedValue::try_from(fields.next()?).ok()?).ok()?;
 
     Some(RawNode {

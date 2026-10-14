@@ -25,13 +25,14 @@ pub fn read() -> Option<Bluetooth> {
 
     let text = String::from_utf8_lossy(&out.stdout);
 
-    if !text.lines().any(|line| line.trim_start().starts_with("Controller ")) {
+    if !text
+        .lines()
+        .any(|line| line.trim_start().starts_with("Controller "))
+    {
         return None;
     }
 
-    let powered = text
-        .lines()
-        .any(|line| line.trim() == "Powered: yes");
+    let powered = text.lines().any(|line| line.trim() == "Powered: yes");
     let devices = if powered {
         connected_devices()
     } else {

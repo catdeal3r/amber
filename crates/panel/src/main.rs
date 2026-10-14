@@ -9,7 +9,7 @@ mod niri;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use iced::widget::{button, column, container, image, mouse_area, row, text, Space, Stack};
+use iced::widget::{Space, Stack, button, column, container, image, mouse_area, row, text};
 use iced::{Alignment, Border, Color, ContentFit, Element, Length, Padding, Task};
 use iced_layershell::reexport::{
     Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings, OutputOption,
@@ -392,13 +392,11 @@ fn bar_view(state: &Panel) -> Element<'_, Message> {
         .height(Length::Fixed(metrics.bar_height * 0.55))
         .content_fit(ContentFit::Contain);
 
-    let taglist = row(
-        state
-            .workspaces
-            .iter()
-            .map(|workspace| tag(state, workspace))
-            .collect::<Vec<_>>(),
-    )
+    let taglist = row(state
+        .workspaces
+        .iter()
+        .map(|workspace| tag(state, workspace))
+        .collect::<Vec<_>>())
     .spacing(metrics.gap)
     .align_y(Alignment::Center);
 
@@ -439,15 +437,11 @@ fn bar_view(state: &Panel) -> Element<'_, Message> {
     // of the bar, so it stays put regardless of how wide the side clusters are.
     // them. The workspace pager is stacked on top and centred on the full width
     // of the bar, so it stays put regardless of how wide the side clusters are.
-    let clusters = row![
-        logo,
-        Space::new().width(Length::Fill),
-        right,
-    ]
-    .spacing(metrics.bar_cluster_gap)
-    .align_y(Alignment::Center)
-    .padding([0.0, 10.0])
-    .height(Length::Fill);
+    let clusters = row![logo, Space::new().width(Length::Fill), right,]
+        .spacing(metrics.bar_cluster_gap)
+        .align_y(Alignment::Center)
+        .padding([0.0, 10.0])
+        .height(Length::Fill);
 
     let pager = container(taglist)
         .width(Length::Fill)
@@ -475,7 +469,9 @@ fn bar_view(state: &Panel) -> Element<'_, Message> {
 
 /// Wrap an indicator so hovering it opens its tooltip.
 fn hoverable<'a>(kind: HoverKind, content: Element<'a, Message>) -> Element<'a, Message> {
-    mouse_area(content).on_enter(Message::HoverEnter(kind)).into()
+    mouse_area(content)
+        .on_enter(Message::HoverEnter(kind))
+        .into()
 }
 
 /// Width of the context-menu card.
@@ -877,13 +873,7 @@ fn wifi_indicator(state: &Panel) -> Element<'_, Message> {
         (0xeb31, palette.muted) // wifi_find
     };
 
-    status_button(
-        metrics,
-        fonts.icon,
-        glyph,
-        color,
-        Message::ToggleWifi,
-    )
+    status_button(metrics, fonts.icon, glyph, color, Message::ToggleWifi)
 }
 
 /// The Bluetooth glyph, or nothing when the machine has no controller. Clicking
@@ -905,13 +895,7 @@ fn bluetooth_indicator(state: &Panel) -> Element<'_, Message> {
         (0xe1a7, palette.text) // bluetooth
     };
 
-    status_button(
-        metrics,
-        fonts.icon,
-        glyph,
-        color,
-        Message::ToggleBluetooth,
-    )
+    status_button(metrics, fonts.icon, glyph, color, Message::ToggleBluetooth)
 }
 
 /// One icon per registered tray item, in registration order.
@@ -981,25 +965,22 @@ fn status_button<'a>(
     message: Message,
 ) -> Element<'a, Message> {
     button(
-        container(
-            text(glyph_char(glyph))
-                .font(font)
-                .size(16.0)
-                .color(color),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .align_x(Alignment::Center)
-        .align_y(Alignment::Center),
+        container(text(glyph_char(glyph)).font(font).size(16.0).color(color))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center),
     )
     .width(Length::Fixed(25.0))
     .height(Length::Fixed(metrics.bar_height - 11.0))
     .padding(0)
     .on_press(message)
-    .style(move |_theme: &iced::Theme, _status: button::Status| button::Style {
-        text_color: color,
-        ..button::Style::default()
-    })
+    .style(
+        move |_theme: &iced::Theme, _status: button::Status| button::Style {
+            text_color: color,
+            ..button::Style::default()
+        },
+    )
     .into()
 }
 
@@ -1011,13 +992,13 @@ fn glyph_char(codepoint: u32) -> String {
 /// Picks a `battery_*_bar` glyph for a discharging level.
 fn level_glyph(percentage: u8) -> u32 {
     match percentage {
-        95.. => 0xe1a4, // battery_full
+        95.. => 0xe1a4,    // battery_full
         80..=94 => 0xebd2, // battery_6_bar
         65..=79 => 0xebd4, // battery_5_bar
         50..=64 => 0xebe2, // battery_4_bar
         35..=49 => 0xebdd, // battery_3_bar
         20..=34 => 0xebe0, // battery_2_bar
-        _ => 0xebd9,    // battery_1_bar
+        _ => 0xebd9,       // battery_1_bar
     }
 }
 
@@ -1053,18 +1034,20 @@ fn tag<'a>(state: &'a Panel, workspace: &'a niri::Workspace) -> Element<'a, Mess
     .height(Length::Fixed(metrics.bar_height - 11.0))
     .padding(0)
     .on_press(Message::FocusWorkspace(idx))
-    .style(move |_theme: &iced::Theme, status: button::Status| button::Style {
-        background: Some(
-            match status {
-                button::Status::Hovered | button::Status::Pressed => palette.hover,
-                _ => Color::TRANSPARENT,
-            }
-            .into(),
-        ),
-        text_color: color,
-        border: Border::default(),
-        ..button::Style::default()
-    })
+    .style(
+        move |_theme: &iced::Theme, status: button::Status| button::Style {
+            background: Some(
+                match status {
+                    button::Status::Hovered | button::Status::Pressed => palette.hover,
+                    _ => Color::TRANSPARENT,
+                }
+                .into(),
+            ),
+            text_color: color,
+            border: Border::default(),
+            ..button::Style::default()
+        },
+    )
     .into()
 }
 
